@@ -1,7 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, KeyRound, Search, ArrowRight, RefreshCw, AlertCircle } from 'lucide-react';
+import {
+  Shield,
+  KeyRound,
+  Search,
+  ArrowRight,
+  RefreshCw,
+  AlertCircle,
+  Network,
+  Share2,
+  ShieldCheck,
+  Clock,
+  Sparkles,
+} from 'lucide-react';
 import { ApiKeyModal } from './components/ApiKeyModal';
 import { ChainFlowPipeline } from './components/ChainFlowPipeline';
+import { PyVisGraphViewer } from './components/PyVisGraphViewer';
+import { AuditTrailViewer } from './components/AuditTrailViewer';
 import { ApiConfig, ServerHealth, TraceResponse } from './types';
 import {
   checkServerHealth,
@@ -10,7 +24,7 @@ import {
   resetApiConfig,
   resolveInput,
   saveApiConfig,
-  traceAddress
+  traceAddress,
 } from './services/api';
 
 export const App: React.FC = () => {
@@ -23,6 +37,9 @@ export const App: React.FC = () => {
   // Currency: BTC or ETH
   const [currency, setCurrency] = useState<'BTC' | 'ETH'>('BTC');
   const [inputId, setInputId] = useState('');
+
+  // Active view: pipeline, interactive pyvis graph, or audit trail
+  const [viewMode, setViewMode] = useState<'pipeline' | 'pyvis' | 'audit'>('pipeline');
 
   const [isApiModalOpen, setIsApiModalOpen] = useState(false);
 
@@ -174,8 +191,8 @@ export const App: React.FC = () => {
       </header>
 
       {/* 2. MAIN BODY */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6">
-        {/* Simple Address / Transaction ID Input Bar (NO dummy entries) */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 lg:px-8 py-6 space-y-5">
+        {/* Simple Address / Transaction ID Input Bar (clean & simple) */}
         <section>
           <form
             onSubmit={(e) => {
@@ -203,7 +220,7 @@ export const App: React.FC = () => {
               type="text"
               value={inputId}
               onChange={(e) => setInputId(e.target.value)}
-              placeholder="Paste Transaction ID (hash) or Wallet Address and press Enter..."
+              placeholder="Paste Wallet Address or Transaction ID to trace connection flow..."
               className="flex-1 bg-transparent text-sm sm:text-base text-white placeholder-slate-500 px-3 py-2.5 focus:outline-none font-mono tracking-tight"
             />
 
@@ -236,10 +253,90 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* 3. THE CONNECTION FLOW CHART PIPELINE */}
+        {/* View Mode Switcher & Quick Stats Bar */}
+        {trace && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* View Tabs */}
+            <div className="flex items-center rounded-xl bg-slate-900/90 border border-slate-800 p-1 text-xs font-mono">
+              <button
+                type="button"
+                onClick={() => setViewMode('pipeline')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition font-semibold ${
+                  viewMode === 'pipeline'
+                    ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Flow Pipeline</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('pyvis')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition font-semibold ${
+                  viewMode === 'pyvis'
+                    ? 'bg-indigo-500 text-white shadow-md font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Network className="w-3.5 h-3.5" />
+                <span>Interactive Graph</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('audit')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition font-semibold ${
+                  viewMode === 'audit'
+                    ? 'bg-emerald-500 text-slate-950 shadow-md font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>SHA-256 Audit Trail</span>
+                {trace.audit_trail?.is_valid_chain && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300" />
+                )}
+              </button>
+            </div>
+
+            {/* Quick Metrics Tag */}
+            <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
+              <span className="flex items-center gap-1">
+                <Clock className="w-3 h-3 text-slate-500" />
+                <span>{trace.execution_time_ms} ms</span>
+              </span>
+              <span>•</span>
+              <span>{trace.total_nodes} Wallets</span>
+              <span>•</span>
+              <span>{trace.total_edges} Transfers</span>
+              <span>•</span>
+              <span className="text-emerald-400 font-semibold">
+                {trace.end_receivers.filter((r) => r.is_sink).length} Sinks
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* 3. ACTIVE VIEW CONTENT */}
         {trace && (
           <section className="animate-fadeIn">
-            <ChainFlowPipeline trace={trace} currency={currency} />
+            {viewMode === 'pipeline' && (
+              <ChainFlowPipeline trace={trace} currency={currency} />
+            )}
+
+            {viewMode === 'pyvis' && (
+              <PyVisGraphViewer
+                serverUrl={config.serverUrl}
+                targetAddress={trace.target_address}
+              />
+            )}
+
+            {viewMode === 'audit' && (
+              <AuditTrailViewer
+                auditTrail={trace.audit_trail}
+                targetAddress={trace.target_address}
+              />
+            )}
           </section>
         )}
       </main>

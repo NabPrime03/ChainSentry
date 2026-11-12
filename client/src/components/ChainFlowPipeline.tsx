@@ -1,11 +1,18 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Building2,
   Skull,
   Info,
   Check,
   Copy,
-  ShieldAlert
+  ShieldAlert,
+  Play,
+  Pause,
+  RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  Flame,
+  ArrowRight,
 } from 'lucide-react';
 import { TraceResponse } from '../types';
 import { formatCrypto, shortenAddr } from '../services/api';
@@ -23,10 +30,17 @@ interface PipelineHop {
     sublabel: string;
     isSource: boolean;
     isSink: boolean;
+    isMixer: boolean;
+    isCashout: boolean;
+    stoppingReason?: string;
+    entityName?: string;
     x: number;
     y: number;
     balance?: number;
     totalSent?: number;
+    totalReceived?: number;
+    inDegree?: number;
+    outDegree?: number;
   };
   trunkEdge?: {
     txHash: string;
@@ -45,8 +59,14 @@ interface PipelineHop {
     sublabel: string;
     isAdversarial: boolean;
     adversarialTag?: string | null;
+    isSink: boolean;
+    isCashout: boolean;
+    stoppingReason?: string;
+    entityName?: string;
     x: number;
     y: number;
+    amount: number;
+    currency: string;
   };
   peelEdge?: {
     txHash: string;
@@ -70,10 +90,21 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
     addressOrHash: string;
     amount?: number;
     currency?: string;
+    stoppingReason?: string;
+    entityName?: string;
     details?: string;
+    inDegree?: number;
+    outDegree?: number;
+    balance?: number;
+    isAdversarial?: boolean;
+    adversarialTag?: string;
   } | null>(null);
 
   const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  // Flow Stepping / Playback State
+  const [activeHopIndex, setActiveHopIndex] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
   const handleCopy = (text: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -82,9 +113,15 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
     setTimeout(() => setCopiedText(null), 1500);
   };
 
-  // Build the clean pipeline matching the reference image layout
+  // Build the clean pipeline using REAL server data and entities
   const { hops, totalWidth, totalHeight } = useMemo(() => {
     const sourceAddr = trace.target_address;
+
+    // Create lookup for end receivers
+    const endReceiversMap = new Map<string, typeof trace.end_receivers[0]>();
+    for (const r of trace.end_receivers) {
+      endReceiversMap.set(r.address, r);
+    }
 
     // 1. Identify primary trunk path to largest sink
     let trunkPath: string[] = [];
@@ -108,7 +145,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       }
     }
 
-    // Coordinate layout constants
+    // Layout constants
     const startX = 140;
     const colSpacing = 260; // generous spacing between hops
     const trunkY = 240;
@@ -124,24 +161,43 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       const trunkX = startX + i * colSpacing;
 
       const nodeInfo = trace.nodes.find((n) => n.address === currentAddr);
+      const receiverInfo = endReceiversMap.get(currentAddr);
 
-      // Label & Sublabel formatting
+      const isCashout = Boolean(receiverInfo?.is_terminal_cashout || receiverInfo?.entity_type === 'EXCHANGE');
+      const isMixer = Boolean(receiverInfo?.is_mixer || receiverInfo?.entity_type === 'MIXER');
+
+      // REAL label & sublabel from server data (NO fake dummy entries)
       let trunkLabel = shortenAddr(currentAddr, 6);
-      let trunkSublabel = 'TRANSIT WALLET';
+      let trunkSublabel = `TRANSIT HOP ${i}`;
 
       if (isSource) {
-        trunkLabel = currentAddr.toLowerCase().includes('hacker')
-          ? 'Hacker Ransomware Vault'
-          : shortenAddr(currentAddr, 8);
+        if (currentAddr.toLowerCase().includes('hacker') || currentAddr.toLowerCase().includes('vault')) {
+          trunkLabel = 'Hacker Vault';
+        } else {
+          trunkLabel = shortenAddr(currentAddr, 6);
+        }
         trunkSublabel = 'ILLICIT SOURCE';
       } else if (isSink) {
-        trunkLabel = currentAddr.toLowerCase().includes('binance')
-          ? 'Binance: Deposit Sweeper'
-          : shortenAddr(currentAddr, 8);
-        trunkSublabel = 'EXCHANGE RAMP';
+        if (receiverInfo?.entity_name) {
+          trunkLabel = receiverInfo.entity_name;
+        } else if (currentAddr.toLowerCase().includes('binance')) {
+          trunkLabel = 'Binance Cashout';
+        } else if (isMixer) {
+          trunkLabel = 'Mixer Pool';
+        } else {
+          trunkLabel = shortenAddr(currentAddr, 6);
+        }
+
+        if (isCashout) {
+          trunkSublabel = 'EXCHANGE RAMP';
+        } else if (isMixer) {
+          trunkSublabel = 'MIXER / TUMBLER';
+        } else {
+          trunkSublabel = 'COLD STORAGE SINK';
+        }
       } else {
-        trunkLabel = `1peelt...et0${i}`;
-        trunkSublabel = 'TRANSIT WALLET';
+        trunkLabel = shortenAddr(currentAddr, 6);
+        trunkSublabel = `TRANSIT HOP ${i}`;
       }
 
       // Horizontal trunk edge to next hop
@@ -179,17 +235,28 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       if (peelTxs.length > 0) {
         peelTxs.sort((a, b) => b.amount - a.amount);
         const topPeel = peelTxs[0];
+        const peelReceiver = endReceiversMap.get(topPeel.to_address);
 
-        // Peel node is placed halfway between trunk nodes for beautiful curved geometry
+        // Positioned between trunk nodes for clean curved geometry
         const peelX = trunkX + 110;
         const peelY = branchY;
 
-        let pLabel = `1merch...ut0${i + 1}`;
+        let pLabel = shortenAddr(topPeel.to_address, 6);
+        if (peelReceiver?.entity_name) {
+          pLabel = peelReceiver.entity_name;
+        }
+
         let pSublabel = 'TRANSIT WALLET';
         if (topPeel.is_adversarial) {
           pSublabel = topPeel.adversarial_tag?.includes('DUST')
             ? 'DUSTING TRAP'
             : 'POISONING TRAP';
+        } else if (peelReceiver?.is_terminal_cashout) {
+          pSublabel = 'EXCHANGE RAMP';
+        } else if (peelReceiver?.is_mixer) {
+          pSublabel = 'MIXER SINK';
+        } else if (peelReceiver?.stopping_reason?.includes('Cold Storage')) {
+          pSublabel = 'COLD SINK';
         }
 
         peelNode = {
@@ -198,8 +265,14 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
           sublabel: pSublabel,
           isAdversarial: Boolean(topPeel.is_adversarial),
           adversarialTag: topPeel.adversarial_tag,
+          isSink: Boolean(peelReceiver?.is_sink),
+          isCashout: Boolean(peelReceiver?.is_terminal_cashout),
+          stoppingReason: peelReceiver?.stopping_reason,
+          entityName: peelReceiver?.entity_name ?? undefined,
           x: peelX,
           y: peelY,
+          amount: topPeel.amount,
+          currency: topPeel.currency,
         };
 
         // Smooth Bezier S-curve arching up and right into the peel wallet
@@ -238,10 +311,17 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
           sublabel: trunkSublabel,
           isSource,
           isSink,
+          isMixer,
+          isCashout,
+          stoppingReason: receiverInfo?.stopping_reason,
+          entityName: receiverInfo?.entity_name ?? undefined,
           x: trunkX,
           y: trunkY,
           balance: nodeInfo?.balance_estimate,
           totalSent: nodeInfo?.total_sent,
+          totalReceived: nodeInfo?.total_received,
+          inDegree: nodeInfo?.in_degree,
+          outDegree: nodeInfo?.out_degree,
         },
         trunkEdge,
         peelNode,
@@ -258,20 +338,108 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
     };
   }, [trace]);
 
+  // Stepping timer
+  useEffect(() => {
+    let timer: any = null;
+    if (isPlaying) {
+      timer = setInterval(() => {
+        setActiveHopIndex((curr) => {
+          if (curr === null || curr >= hops.length - 1) {
+            return 0;
+          }
+          return curr + 1;
+        });
+      }, 2000);
+    }
+    return () => clearInterval(timer);
+  }, [isPlaying, hops.length]);
+
   return (
     <div className="bg-[#070b14] border border-slate-800/80 rounded-2xl p-6 shadow-2xl relative overflow-hidden flex flex-col space-y-4">
-      {/* Visual Header */}
-      <div className="flex items-center justify-between pb-2 border-b border-slate-800/60 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span className="text-slate-300 font-semibold tracking-wide uppercase text-[11px]">
+      {/* Visual Header with Playback Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/60 text-xs">
+        <div className="flex items-center gap-2.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
+          <span className="text-slate-200 font-bold tracking-wide uppercase text-[11px]">
             Connection Flow Pipeline
           </span>
-          <span className="text-slate-500 font-mono">({currency} Trace)</span>
+          <span className="text-slate-400 font-mono text-[11px]">
+            ({hops.length} Hops • {trace.total_edges} Transfers)
+          </span>
         </div>
-        <span className="text-[11px] font-mono text-slate-400">
-          Click any wallet or amount badge to view details
-        </span>
+
+        {/* Stepping / Playback Controls */}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {/* Step Back */}
+          <button
+            onClick={() => {
+              setIsPlaying(false);
+              setActiveHopIndex((curr) => (curr === null || curr <= 0 ? 0 : curr - 1));
+            }}
+            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+            title="Previous Hop"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Play / Pause Toggle */}
+          <button
+            onClick={() => {
+              if (activeHopIndex === null) setActiveHopIndex(0);
+              setIsPlaying(!isPlaying);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-mono font-bold transition ${
+              isPlaying
+                ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20'
+                : 'bg-slate-800 hover:bg-slate-700 text-sky-400'
+            }`}
+          >
+            {isPlaying ? (
+              <>
+                <Pause className="w-3.5 h-3.5" />
+                <span>Pause</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5" />
+                <span>Play Flow</span>
+              </>
+            )}
+          </button>
+
+          {/* Step Forward */}
+          <button
+            onClick={() => {
+              setIsPlaying(false);
+              setActiveHopIndex((curr) =>
+                curr === null || curr >= hops.length - 1 ? hops.length - 1 : curr + 1
+              );
+            }}
+            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+            title="Next Hop"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Reset */}
+          <button
+            onClick={() => {
+              setIsPlaying(false);
+              setActiveHopIndex(null);
+            }}
+            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+            title="Reset Playthrough"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Hop Indicator Pill */}
+          {activeHopIndex !== null && (
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800 font-bold ml-1">
+              HOP {activeHopIndex + 1}/{hops.length}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* SVG Canvas Area */}
@@ -283,10 +451,11 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
         >
           {/* RENDER EACH HOP IN SEQUENCE */}
           {hops.map((hop) => {
-            const { trunkNode, trunkEdge, peelNode, peelEdge } = hop;
+            const { trunkNode, trunkEdge, peelNode, peelEdge, hopIndex } = hop;
+            const isHopActive = activeHopIndex === hopIndex;
 
             return (
-              <g key={trunkNode.address}>
+              <g key={trunkNode.address} className={activeHopIndex !== null && !isHopActive ? 'opacity-40 transition-opacity' : 'transition-opacity'}>
                 {/* 1. PEEL BRANCH CURVE (Curving Upward) */}
                 {peelEdge && (
                   <g
@@ -298,7 +467,11 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         addressOrHash: peelEdge.txHash,
                         amount: peelEdge.amount,
                         currency: peelEdge.currency,
-                        details: `Peeled off from ${shortenAddr(peelEdge.from)} → ${shortenAddr(peelEdge.to)}`,
+                        isAdversarial: peelEdge.isAdversarial,
+                        adversarialTag: peelNode?.adversarialTag ?? undefined,
+                        stoppingReason: peelNode?.stoppingReason,
+                        entityName: peelNode?.entityName,
+                        details: `Peeled off ${formatCrypto(peelEdge.amount, peelEdge.currency)} from ${shortenAddr(peelEdge.from)} → ${shortenAddr(peelEdge.to)}`,
                       })
                     }
                   >
@@ -328,13 +501,13 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                     {/* Amount Pill Badge on Peel Curve */}
                     <g transform={`translate(${peelEdge.midX}, ${peelEdge.midY})`}>
                       <rect
-                        x="-40"
+                        x="-44"
                         y="-12"
-                        width="80"
+                        width="88"
                         height="24"
                         rx="12"
                         fill="#0b1324"
-                        stroke="#00d2ff"
+                        stroke={peelEdge.isAdversarial ? '#f43f5e' : '#00d2ff'}
                         strokeWidth="1.5"
                         className="transition-colors group-hover:fill-sky-950 group-hover:stroke-white"
                       />
@@ -363,9 +536,15 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         title: peelNode.label,
                         subtitle: peelNode.sublabel,
                         addressOrHash: peelNode.address,
+                        amount: peelNode.amount,
+                        currency: peelNode.currency,
+                        isAdversarial: peelNode.isAdversarial,
+                        adversarialTag: peelNode.adversarialTag ?? undefined,
+                        stoppingReason: peelNode.stoppingReason,
+                        entityName: peelNode.entityName,
                         details: peelNode.isAdversarial
-                          ? `Flagged: ${peelNode.adversarialTag || 'Adversarial Trap'}`
-                          : 'Secondary Peel / Transit Wallet',
+                          ? `⚠️ Flagged by Security Engine: ${peelNode.adversarialTag || 'Adversarial Trap'}`
+                          : peelNode.stoppingReason || 'Secondary Peel Transit Destination',
                       })
                     }
                   >
@@ -410,7 +589,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                   </g>
                 )}
 
-                {/* 3. TRUNK HORIZONTAL ARROW (Clearly visible thick cyan connection) */}
+                {/* 3. TRUNK HORIZONTAL ARROW */}
                 {trunkEdge && (
                   <g
                     className="cursor-pointer group"
@@ -431,11 +610,13 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       y1={trunkEdge.y}
                       x2={trunkEdge.endX}
                       y2={trunkEdge.y}
-                      stroke="#00d2ff"
-                      strokeWidth="3.5"
+                      stroke={isHopActive ? '#38bdf8' : '#00d2ff'}
+                      strokeWidth={isHopActive ? '5' : '3.5'}
                       strokeLinecap="round"
                       style={{
-                        filter: 'drop-shadow(0px 0px 6px rgba(0, 210, 255, 0.8))',
+                        filter: isHopActive
+                          ? 'drop-shadow(0px 0px 10px rgba(56, 189, 248, 1))'
+                          : 'drop-shadow(0px 0px 6px rgba(0, 210, 255, 0.8))',
                       }}
                       className="transition-all group-hover:stroke-white"
                     />
@@ -443,7 +624,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                     {/* Prominent Arrowhead Pointing Right into the next node */}
                     <polygon
                       points={`${trunkEdge.endX},${trunkEdge.y} ${trunkEdge.endX - 10},${trunkEdge.y - 6} ${trunkEdge.endX - 10},${trunkEdge.y + 6}`}
-                      fill="#00d2ff"
+                      fill={isHopActive ? '#38bdf8' : '#00d2ff'}
                       style={{
                         filter: 'drop-shadow(0px 0px 4px rgba(0, 210, 255, 0.8))',
                       }}
@@ -457,7 +638,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         width="88"
                         height="26"
                         rx="13"
-                        fill="#0b1324"
+                        fill={isHopActive ? '#0284c7' : '#0b1324'}
                         stroke="#00d2ff"
                         strokeWidth="1.5"
                         className="transition-colors group-hover:fill-sky-950 group-hover:stroke-white"
@@ -486,7 +667,12 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       title: trunkNode.label,
                       subtitle: trunkNode.sublabel,
                       addressOrHash: trunkNode.address,
-                      details: `Total Outflow: ${formatCrypto(trunkNode.totalSent || 0, currency)}`,
+                      stoppingReason: trunkNode.stoppingReason,
+                      entityName: trunkNode.entityName,
+                      inDegree: trunkNode.inDegree,
+                      outDegree: trunkNode.outDegree,
+                      balance: trunkNode.balance,
+                      details: trunkNode.stoppingReason || `Total Outflow: ${formatCrypto(trunkNode.totalSent || 0, currency)}`,
                     })
                   }
                 >
@@ -498,7 +684,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         fill="none"
                         stroke="#ef4444"
                         strokeWidth="2"
-                        opacity="0.3"
+                        opacity={isHopActive ? '0.8' : '0.3'}
                         className="animate-ping"
                       />
                       <circle
@@ -537,21 +723,27 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                     </>
                   )}
 
-                  {/* SINK CASHOUT NODE (Right Bank / Exchange Node) */}
+                  {/* SINK CASHOUT NODE / MIXER (Right Terminal Node) */}
                   {trunkNode.isSink && !trunkNode.isSource && (
                     <>
                       <circle
                         r="24"
                         fill="#091b29"
-                        stroke="#00d2ff"
+                        stroke={trunkNode.isMixer ? '#a855f7' : '#00d2ff'}
                         strokeWidth="2.5"
                         style={{
-                          filter: 'drop-shadow(0px 0px 6px rgba(0, 210, 255, 0.8))',
+                          filter: trunkNode.isMixer
+                            ? 'drop-shadow(0px 0px 8px rgba(168, 85, 247, 0.8))'
+                            : 'drop-shadow(0px 0px 8px rgba(0, 210, 255, 0.8))',
                         }}
                         className="group-hover:scale-105 transition-all"
                       />
                       <g transform="translate(-10, -10)">
-                        <Building2 className="w-5 h-5 text-sky-300" />
+                        {trunkNode.isMixer ? (
+                          <Flame className="w-5 h-5 text-purple-400" />
+                        ) : (
+                          <Building2 className="w-5 h-5 text-sky-300" />
+                        )}
                       </g>
                       <text
                         y="42"
@@ -566,7 +758,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       <text
                         y="56"
                         textAnchor="middle"
-                        fill="#10b981"
+                        fill={trunkNode.isMixer ? '#c084fc' : '#10b981'}
                         fontSize="9"
                         fontWeight="800"
                         letterSpacing="1"
@@ -582,7 +774,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       <circle
                         r="20"
                         fill="#080e1e"
-                        stroke="#00d2ff"
+                        stroke={isHopActive ? '#38bdf8' : '#00d2ff'}
                         strokeWidth="2"
                         style={{
                           filter: 'drop-shadow(0px 0px 5px rgba(0, 210, 255, 0.5))',
@@ -621,24 +813,59 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
         </svg>
       </div>
 
-      {/* Clean Bottom Inspector (When clicking any node or amount badge) */}
+      {/* Enhanced Forensic Inspector (When clicking any node or amount badge) */}
       {selectedEntity && (
-        <div className="bg-slate-950/95 border border-slate-800 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-fadeIn">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
+        <div className="bg-slate-950/95 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-start justify-between gap-4 text-xs animate-fadeIn">
+          <div className="space-y-2 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] font-mono px-2 py-0.5 rounded uppercase font-bold bg-sky-950 text-sky-400 border border-sky-800">
                 {selectedEntity.subtitle}
               </span>
+              {selectedEntity.entityName && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-indigo-950 text-indigo-300 border border-indigo-800">
+                  {selectedEntity.entityName}
+                </span>
+              )}
+              {selectedEntity.isAdversarial && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-rose-950 text-rose-300 border border-rose-800 flex items-center gap-1">
+                  <ShieldAlert className="w-3 h-3" />
+                  {selectedEntity.adversarialTag || 'Adversarial Decoy'}
+                </span>
+              )}
               <span className="font-mono text-white font-bold select-all">
                 {selectedEntity.addressOrHash}
               </span>
             </div>
-            <p className="text-slate-400 text-[11px] font-mono">
+
+            {/* Forensic Stopping Reason from Server */}
+            {selectedEntity.stoppingReason && (
+              <div className="bg-amber-950/30 border border-amber-800/60 rounded-lg p-2 text-amber-300 text-[11px] font-mono">
+                <span className="font-bold block text-amber-400 text-[10px] uppercase">Forensic Stopping Decision:</span>
+                {selectedEntity.stoppingReason}
+              </div>
+            )}
+
+            <p className="text-slate-300 text-[11px] font-mono">
               {selectedEntity.details}
             </p>
+
+            {/* Degree & Balance Stats if Available */}
+            {(selectedEntity.inDegree !== undefined || selectedEntity.balance !== undefined) && (
+              <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400 font-mono pt-1">
+                {selectedEntity.inDegree !== undefined && (
+                  <span>In-Degree: <b className="text-slate-200">{selectedEntity.inDegree}</b></span>
+                )}
+                {selectedEntity.outDegree !== undefined && (
+                  <span>Out-Degree: <b className="text-slate-200">{selectedEntity.outDegree}</b></span>
+                )}
+                {selectedEntity.balance !== undefined && (
+                  <span>Balance: <b className="text-emerald-400">{formatCrypto(selectedEntity.balance, currency)}</b></span>
+                )}
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={(e) => handleCopy(selectedEntity.addressOrHash, e)}
               className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-mono text-xs flex items-center gap-1.5 transition"
@@ -652,7 +879,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
             </button>
             <button
               onClick={() => setSelectedEntity(null)}
-              className="text-slate-400 hover:text-white text-xs px-2"
+              className="text-slate-400 hover:text-white text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800"
             >
               Close
             </button>
