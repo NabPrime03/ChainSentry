@@ -32,10 +32,12 @@ interface PipelineHop {
     txHash: string;
     from: string;
     to: string;
+    startX: number;
+    endX: number;
+    y: number;
     amount: number;
     currency: string;
     midX: number;
-    midY: number;
   };
   peelNode?: {
     address: string;
@@ -54,9 +56,10 @@ interface PipelineHop {
     currency: string;
     isAdversarial: boolean;
     pathD: string;
+    arrowX: number;
+    arrowY: number;
     midX: number;
     midY: number;
-    extraCount?: number;
   };
 }
 
@@ -83,15 +86,14 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
   const { hops, totalWidth, totalHeight } = useMemo(() => {
     const sourceAddr = trace.target_address;
 
-    // 1. Identify primary trunk path
-    // Prefer path to largest end receiver / sink
+    // 1. Identify primary trunk path to largest sink
     let trunkPath: string[] = [];
     if (trace.end_receivers && trace.end_receivers.length > 0) {
       const sorted = [...trace.end_receivers].sort((a, b) => b.amount_reached - a.amount_reached);
       trunkPath = sorted[0].path || [];
     }
 
-    // Fallback if path is trivial: follow highest volume chain
+    // Fallback if needed: follow largest volume forward chain
     if (trunkPath.length < 2) {
       trunkPath = [sourceAddr];
       let current = sourceAddr;
@@ -106,9 +108,9 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       }
     }
 
-    // Coordinates constants
+    // Coordinate layout constants
     const startX = 140;
-    const colSpacing = 240;
+    const colSpacing = 260; // generous spacing between hops
     const trunkY = 240;
     const branchY = 80;
 
@@ -142,10 +144,11 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
         trunkSublabel = 'TRANSIT WALLET';
       }
 
-      // Find the main forward trunk edge to next hop
+      // Horizontal trunk edge to next hop
       let trunkEdge: PipelineHop['trunkEdge'] = undefined;
       if (i < trunkCount - 1) {
         const nextAddr = trunkPath[i + 1];
+        const nextTrunkX = startX + (i + 1) * colSpacing;
         const forwardTx = trace.transactions.find(
           (t) => t.from_address === currentAddr && t.to_address === nextAddr
         );
@@ -154,16 +157,17 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
             txHash: forwardTx.tx_hash,
             from: currentAddr,
             to: nextAddr,
+            startX: trunkX + 26,
+            endX: nextTrunkX - 26,
+            y: trunkY,
             amount: forwardTx.amount,
             currency: forwardTx.currency,
-            midX: trunkX + colSpacing / 2,
-            midY: trunkY,
+            midX: (trunkX + nextTrunkX) / 2,
           };
         }
       }
 
-      // Find the peel/branch transactions branching off from this trunk node
-      // Filter out transactions that go to next trunk node
+      // Peel transaction branching upward
       const nextTrunkAddr = i < trunkCount - 1 ? trunkPath[i + 1] : null;
       const peelTxs = trace.transactions.filter(
         (t) => t.from_address === currentAddr && t.to_address !== nextTrunkAddr
@@ -173,11 +177,11 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       let peelEdge: PipelineHop['peelEdge'] = undefined;
 
       if (peelTxs.length > 0) {
-        // Pick the top peel (e.g. significant peel or genuine over 0.0 dust)
         peelTxs.sort((a, b) => b.amount - a.amount);
         const topPeel = peelTxs[0];
 
-        const peelX = trunkX + 90;
+        // Peel node is placed halfway between trunk nodes for beautiful curved geometry
+        const peelX = trunkX + 110;
         const peelY = branchY;
 
         let pLabel = `1merch...ut0${i + 1}`;
@@ -198,16 +202,16 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
           y: peelY,
         };
 
-        // Smooth Bezier curve upward
-        const startXNode = trunkX + 12;
-        const startYNode = trunkY - 14;
-        const endXNode = peelX - 14;
-        const endYNode = peelY + 14;
+        // Smooth Bezier S-curve arching up and right into the peel wallet
+        const startXNode = trunkX + 8;
+        const startYNode = trunkY - 24;
+        const endXNode = peelX;
+        const endYNode = peelY + 24;
 
-        const cp1x = startXNode + 35;
-        const cp1y = startYNode - 60;
-        const cp2x = endXNode - 45;
-        const cp2y = endYNode + 60;
+        const cp1x = trunkX + 25;
+        const cp1y = trunkY - 110;
+        const cp2x = peelX - 35;
+        const cp2y = peelY + 80;
 
         const pathD = `M ${startXNode} ${startYNode} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endXNode} ${endYNode}`;
 
@@ -219,9 +223,10 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
           currency: topPeel.currency,
           isAdversarial: Boolean(topPeel.is_adversarial),
           pathD,
-          midX: (startXNode + endXNode) / 2 - 10,
-          midY: (startYNode + endYNode) / 2 - 10,
-          extraCount: peelTxs.length > 1 ? peelTxs.length - 1 : undefined,
+          arrowX: endXNode,
+          arrowY: endYNode,
+          midX: (trunkX + peelX) / 2 - 5,
+          midY: (trunkY + peelY) / 2 - 5,
         };
       }
 
@@ -244,7 +249,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
       });
     }
 
-    const calculatedWidth = Math.max(900, startX + trunkCount * colSpacing + 60);
+    const calculatedWidth = Math.max(920, startX + trunkCount * colSpacing + 60);
 
     return {
       hops: pipelineHops,
@@ -276,31 +281,6 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
           className="w-full h-auto min-w-[850px] select-none"
           style={{ minHeight: '320px' }}
         >
-          <defs>
-            {/* Arrowhead marker */}
-            <marker
-              id="cyan-triangle"
-              viewBox="0 0 10 10"
-              refX="8"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 1 L 9 5 L 0 9 z" fill="#38bdf8" />
-            </marker>
-
-            {/* Glowing cyan shadow */}
-            <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="4" floodColor="#38bdf8" floodOpacity="0.5" />
-            </filter>
-
-            {/* Glowing red shadow */}
-            <filter id="glow-red" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="5" floodColor="#ef4444" floodOpacity="0.6" />
-            </filter>
-          </defs>
-
           {/* RENDER EACH HOP IN SEQUENCE */}
           {hops.map((hop) => {
             const { trunkNode, trunkEdge, peelNode, peelEdge } = hop;
@@ -322,35 +302,48 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       })
                     }
                   >
+                    {/* The Smooth Bezier Curve Line */}
                     <path
                       d={peelEdge.pathD}
                       fill="none"
-                      stroke={peelEdge.isAdversarial ? '#f43f5e' : '#38bdf8'}
-                      strokeWidth="2.5"
-                      strokeDasharray={peelEdge.isAdversarial ? '5,5' : 'none'}
-                      className="transition-all opacity-85 group-hover:opacity-100 group-hover:stroke-white"
-                      filter="url(#glow-cyan)"
+                      stroke={peelEdge.isAdversarial ? '#f43f5e' : '#00d2ff'}
+                      strokeWidth="3.5"
+                      strokeDasharray={peelEdge.isAdversarial ? '6,6' : 'none'}
+                      strokeLinecap="round"
+                      style={{
+                        filter: 'drop-shadow(0px 0px 5px rgba(0, 210, 255, 0.7))',
+                      }}
+                      className="transition-all opacity-90 group-hover:opacity-100 group-hover:stroke-white"
+                    />
+
+                    {/* Arrowhead directly at end of curve pointing up into peel node */}
+                    <polygon
+                      points={`${peelEdge.arrowX},${peelEdge.arrowY} ${peelEdge.arrowX - 6},${peelEdge.arrowY + 10} ${peelEdge.arrowX + 6},${peelEdge.arrowY + 10}`}
+                      fill={peelEdge.isAdversarial ? '#f43f5e' : '#00d2ff'}
+                      style={{
+                        filter: 'drop-shadow(0px 0px 4px rgba(0, 210, 255, 0.8))',
+                      }}
                     />
 
                     {/* Amount Pill Badge on Peel Curve */}
                     <g transform={`translate(${peelEdge.midX}, ${peelEdge.midY})`}>
                       <rect
-                        x="-38"
-                        y="-11"
-                        width="76"
-                        height="22"
-                        rx="11"
-                        fill="#0c1527"
-                        stroke="#1e293b"
+                        x="-40"
+                        y="-12"
+                        width="80"
+                        height="24"
+                        rx="12"
+                        fill="#0b1324"
+                        stroke="#00d2ff"
                         strokeWidth="1.5"
-                        className="transition-colors group-hover:fill-sky-950 group-hover:stroke-sky-400"
+                        className="transition-colors group-hover:fill-sky-950 group-hover:stroke-white"
                       />
                       <text
                         x="0"
-                        y="3.5"
+                        y="4"
                         textAnchor="middle"
-                        fill="#f8fafc"
-                        fontSize="10"
+                        fill="#ffffff"
+                        fontSize="10.5"
                         fontWeight="700"
                         fontFamily="monospace"
                       >
@@ -379,9 +372,12 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                     <circle
                       r="18"
                       fill="#080e1e"
-                      stroke={peelNode.isAdversarial ? '#f43f5e' : '#1e3a5f'}
-                      strokeWidth="2"
-                      className="group-hover:stroke-sky-400 group-hover:scale-105 transition-all"
+                      stroke={peelNode.isAdversarial ? '#f43f5e' : '#00d2ff'}
+                      strokeWidth="2.5"
+                      style={{
+                        filter: 'drop-shadow(0px 0px 4px rgba(0, 210, 255, 0.5))',
+                      }}
+                      className="group-hover:stroke-white group-hover:scale-105 transition-all"
                     />
                     <g transform="translate(-7, -7)">
                       {peelNode.isAdversarial ? (
@@ -392,7 +388,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                     </g>
 
                     <text
-                      y="32"
+                      y="34"
                       textAnchor="middle"
                       fill="#e2e8f0"
                       fontSize="11"
@@ -402,7 +398,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       {peelNode.label}
                     </text>
                     <text
-                      y="45"
+                      y="48"
                       textAnchor="middle"
                       fill={peelNode.isAdversarial ? '#f43f5e' : '#64748b'}
                       fontSize="9"
@@ -414,7 +410,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                   </g>
                 )}
 
-                {/* 3. TRUNK HORIZONTAL ARROW (To Next Trunk Node) */}
+                {/* 3. TRUNK HORIZONTAL ARROW (Clearly visible thick cyan connection) */}
                 {trunkEdge && (
                   <g
                     className="cursor-pointer group"
@@ -429,38 +425,49 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       })
                     }
                   >
-                    {/* Horizontal Line */}
+                    {/* The Solid Vibrant Cyan Horizontal Line */}
                     <line
-                      x1={trunkNode.x + 22}
-                      y1={trunkNode.y}
-                      x2={trunkNode.x + 240 - 22}
-                      y2={trunkNode.y}
-                      stroke="#38bdf8"
-                      strokeWidth="3"
-                      markerEnd="url(#cyan-triangle)"
-                      filter="url(#glow-cyan)"
+                      x1={trunkEdge.startX}
+                      y1={trunkEdge.y}
+                      x2={trunkEdge.endX}
+                      y2={trunkEdge.y}
+                      stroke="#00d2ff"
+                      strokeWidth="3.5"
+                      strokeLinecap="round"
+                      style={{
+                        filter: 'drop-shadow(0px 0px 6px rgba(0, 210, 255, 0.8))',
+                      }}
                       className="transition-all group-hover:stroke-white"
                     />
 
+                    {/* Prominent Arrowhead Pointing Right into the next node */}
+                    <polygon
+                      points={`${trunkEdge.endX},${trunkEdge.y} ${trunkEdge.endX - 10},${trunkEdge.y - 6} ${trunkEdge.endX - 10},${trunkEdge.y + 6}`}
+                      fill="#00d2ff"
+                      style={{
+                        filter: 'drop-shadow(0px 0px 4px rgba(0, 210, 255, 0.8))',
+                      }}
+                    />
+
                     {/* Amount Pill Badge on Horizontal Arrow */}
-                    <g transform={`translate(${trunkEdge.midX}, ${trunkEdge.midY})`}>
+                    <g transform={`translate(${trunkEdge.midX}, ${trunkEdge.y})`}>
                       <rect
-                        x="-42"
-                        y="-12"
-                        width="84"
-                        height="24"
-                        rx="12"
-                        fill="#0c1527"
-                        stroke="#1e293b"
+                        x="-44"
+                        y="-13"
+                        width="88"
+                        height="26"
+                        rx="13"
+                        fill="#0b1324"
+                        stroke="#00d2ff"
                         strokeWidth="1.5"
-                        className="transition-colors group-hover:fill-sky-950 group-hover:stroke-sky-400"
+                        className="transition-colors group-hover:fill-sky-950 group-hover:stroke-white"
                       />
                       <text
                         x="0"
-                        y="4"
+                        y="4.5"
                         textAnchor="middle"
-                        fill="#f8fafc"
-                        fontSize="10.5"
+                        fill="#ffffff"
+                        fontSize="11"
                         fontWeight="700"
                         fontFamily="monospace"
                       >
@@ -487,7 +494,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                   {trunkNode.isSource && (
                     <>
                       <circle
-                        r="26"
+                        r="28"
                         fill="none"
                         stroke="#ef4444"
                         strokeWidth="2"
@@ -499,14 +506,16 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         fill="#0b0f19"
                         stroke="#ef4444"
                         strokeWidth="2.5"
-                        filter="url(#glow-red)"
+                        style={{
+                          filter: 'drop-shadow(0px 0px 6px rgba(239, 68, 68, 0.8))',
+                        }}
                         className="group-hover:scale-105 transition-transform"
                       />
                       <g transform="translate(-10, -10)">
                         <Skull className="w-5 h-5 text-rose-400" />
                       </g>
                       <text
-                        y="40"
+                        y="42"
                         textAnchor="middle"
                         fill="#ffffff"
                         fontSize="11"
@@ -516,7 +525,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         {trunkNode.label}
                       </text>
                       <text
-                        y="54"
+                        y="56"
                         textAnchor="middle"
                         fill="#f43f5e"
                         fontSize="9"
@@ -534,16 +543,18 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       <circle
                         r="24"
                         fill="#091b29"
-                        stroke="#38bdf8"
+                        stroke="#00d2ff"
                         strokeWidth="2.5"
-                        filter="url(#glow-cyan)"
+                        style={{
+                          filter: 'drop-shadow(0px 0px 6px rgba(0, 210, 255, 0.8))',
+                        }}
                         className="group-hover:scale-105 transition-all"
                       />
                       <g transform="translate(-10, -10)">
                         <Building2 className="w-5 h-5 text-sky-300" />
                       </g>
                       <text
-                        y="40"
+                        y="42"
                         textAnchor="middle"
                         fill="#ffffff"
                         fontSize="11"
@@ -553,7 +564,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         {trunkNode.label}
                       </text>
                       <text
-                        y="54"
+                        y="56"
                         textAnchor="middle"
                         fill="#10b981"
                         fontSize="9"
@@ -571,15 +582,18 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                       <circle
                         r="20"
                         fill="#080e1e"
-                        stroke="#1e3a5f"
+                        stroke="#00d2ff"
                         strokeWidth="2"
-                        className="group-hover:stroke-sky-400 group-hover:scale-105 transition-all"
+                        style={{
+                          filter: 'drop-shadow(0px 0px 5px rgba(0, 210, 255, 0.5))',
+                        }}
+                        className="group-hover:stroke-white group-hover:scale-105 transition-all"
                       />
                       <g transform="translate(-8, -8)">
                         <Info className="w-4 h-4 text-sky-400" />
                       </g>
                       <text
-                        y="38"
+                        y="40"
                         textAnchor="middle"
                         fill="#e2e8f0"
                         fontSize="11"
@@ -589,7 +603,7 @@ export const ChainFlowPipeline: React.FC<ChainFlowPipelineProps> = ({ trace, cur
                         {trunkNode.label}
                       </text>
                       <text
-                        y="52"
+                        y="54"
                         textAnchor="middle"
                         fill="#64748b"
                         fontSize="9"
