@@ -1,9 +1,16 @@
-import { ApiConfig, BenchmarkScenario, FlowStep, ServerHealth, TraceRequest, TraceResponse } from '../types';
+import {
+  ApiConfig,
+  BenchmarkScenario,
+  FlowStep,
+  ServerHealth,
+  TraceRequest,
+  TraceResponse,
+} from '../types';
 
 const STORAGE_KEY = 'chainsentry_api_config';
 
 export const DEFAULT_CONFIG: ApiConfig = {
-  serverUrl: 'http://localhost:8001',
+  serverUrl: 'http://localhost:8000',
   serverApiKey: 'chainsentry-sec-api-key-live',
   etherscanApiKey: '',
   blockstreamApiKey: '',
@@ -47,13 +54,13 @@ function getHeaders(config: ApiConfig): HeadersInit {
 }
 
 /**
- * Finds the working backend URL between port 8001 and port 8000.
+ * Finds the working backend URL between port 8000 and port 8001.
  */
 export async function findActiveBackendUrl(): Promise<string> {
   const candidateUrls = [
     getApiConfig().serverUrl,
-    'http://localhost:8001',
     'http://localhost:8000',
+    'http://localhost:8001',
   ];
   // Deduplicate
   const uniqueUrls = Array.from(new Set(candidateUrls));
@@ -66,7 +73,6 @@ export async function findActiveBackendUrl(): Promise<string> {
       if (res.ok) {
         const data = await res.json();
         if (data && (data.status === 'ok' || data.service?.includes('CryptoTrace'))) {
-          // Update and save
           const cfg = getApiConfig();
           if (cfg.serverUrl !== url) {
             cfg.serverUrl = url;
@@ -77,7 +83,7 @@ export async function findActiveBackendUrl(): Promise<string> {
       }
     } catch {}
   }
-  return 'http://localhost:8001';
+  return 'http://localhost:8000';
 }
 
 /**
@@ -203,7 +209,7 @@ export const KNOWN_TRANSACTIONS_MAP: Record<string, {
   'tx_hop1_dust_003': {
     sourceAddress: 'bc1q_hacker_ransomware_vault',
     currency: 'BTC',
-    description: 'Dusting Attack Decoy: 0.00008 BTC sent to innocent address',
+    description: 'Dusting Attack: 0.00008 BTC sent to innocent victim',
     from: 'bc1q_hacker_ransomware_vault',
     to: 'bc1q_innocent_dusting_victim',
     amount: 0.00008,
@@ -211,7 +217,7 @@ export const KNOWN_TRANSACTIONS_MAP: Record<string, {
   'tx_hop1_poison_004': {
     sourceAddress: 'bc1q_hacker_ransomware_vault',
     currency: 'BTC',
-    description: 'Address Poisoning Decoy: 0.0 BTC to lookalike spoofed address',
+    description: 'Address Poisoning: 0.0 BTC zero-value spoofing transfer',
     from: 'bc1q_hacker_ransomware_vault',
     to: 'bc1q_lookalike_spoofed_victim',
     amount: 0.0,
@@ -219,7 +225,7 @@ export const KNOWN_TRANSACTIONS_MAP: Record<string, {
   'tx_hop2_trunk_005': {
     sourceAddress: 'bc1q_hacker_ransomware_vault',
     currency: 'BTC',
-    description: 'Hop 2 Peel Trunk: 44.5 BTC to Change Hop 2',
+    description: 'Second Trunk Hop: 44.5 BTC to Change Hop 2',
     from: 'bc1q_change_hop1',
     to: 'bc1q_change_hop2',
     amount: 44.5,
@@ -227,7 +233,7 @@ export const KNOWN_TRANSACTIONS_MAP: Record<string, {
   'tx_hop2_peel_006': {
     sourceAddress: 'bc1q_hacker_ransomware_vault',
     currency: 'BTC',
-    description: 'P2P Broker Peel: 3.399 BTC payment',
+    description: 'P2P Broker Peel: 3.399 BTC peeled to broker wallet',
     from: 'bc1q_change_hop1',
     to: 'bc1q_p2p_broker_peel',
     amount: 3.399,
@@ -235,7 +241,7 @@ export const KNOWN_TRANSACTIONS_MAP: Record<string, {
   'tx_hop3_cashout_007': {
     sourceAddress: 'bc1q_hacker_ransomware_vault',
     currency: 'BTC',
-    description: 'Cash-out Exit: 40.0 BTC deposited into Binance Deposit Exchange',
+    description: 'Final Cash-Out: 40.0 BTC transferred to Binance Deposit Address',
     from: 'bc1q_change_hop2',
     to: 'bc1q_binance_deposit_exchange',
     amount: 40.0,
@@ -365,6 +371,12 @@ export function generateFlowSteps(trace: TraceResponse): FlowStep[] {
     nodeMap.set(n.address, n.hop_distance ?? (n.is_source ? 0 : 1));
   }
 
+  // Build lookup map for end receivers with stopping conditions
+  const endReceiverMap = new Map<string, typeof trace.end_receivers[0]>();
+  for (const r of trace.end_receivers) {
+    endReceiverMap.set(r.address, r);
+  }
+
   const txs = [...trace.transactions];
   txs.sort((a, b) => {
     const hopA = nodeMap.get(a.from_address) ?? 0;
@@ -380,6 +392,7 @@ export function generateFlowSteps(trace: TraceResponse): FlowStep[] {
   for (const tx of txs) {
     const fromHop = nodeMap.get(tx.from_address) ?? 0;
     const toHop = nodeMap.get(tx.to_address) ?? fromHop + 1;
+    const receiver = endReceiverMap.get(tx.to_address);
 
     let role: FlowStep['flowRole'] = 'source_trunk';
     let narrative = '';
@@ -392,21 +405,17 @@ export function generateFlowSteps(trace: TraceResponse): FlowStep[] {
         role = 'poisoning';
         narrative = `⚠️ Address Poisoning: Generated 0.0 ${tx.currency} spoofing transaction to ${shortenAddr(tx.to_address)}`;
       }
-    } else if (
-      tx.to_address.toLowerCase().includes('exchange') ||
-      tx.to_address.toLowerCase().includes('binance') ||
-      trace.end_receivers.some((r) => r.address === tx.to_address && r.is_sink)
-    ) {
+    } else if (receiver?.is_terminal_cashout || receiver?.entity_type === 'EXCHANGE') {
       role = 'cashout';
-      narrative = `🎯 Cash-Out Realized: Transferred ${tx.amount} ${tx.currency} into exit sink ${shortenAddr(tx.to_address)}`;
-    } else if (tx.to_address.toLowerCase().includes('mixer') || tx.from_address.toLowerCase().includes('mixer')) {
-      if (tx.from_address.toLowerCase().includes('mixer')) {
-        role = 'mixer_payout';
-        narrative = `🌪️ Mixer Payout: Anonymized withdrawal of ${tx.amount} ${tx.currency} to ${shortenAddr(tx.to_address)}`;
-      } else {
-        role = 'mixer_deposit';
-        narrative = `🌪️ Mixer Pool Injection: Sent ${tx.amount} ${tx.currency} into privacy pool ${shortenAddr(tx.to_address)}`;
-      }
+      const entityStr = receiver.entity_name ? ` (${receiver.entity_name})` : '';
+      narrative = `🎯 Terminal Cash-Out: ${tx.amount} ${tx.currency} into exchange sink ${shortenAddr(tx.to_address)}${entityStr}. Reason: ${receiver.stopping_reason || 'Exchange exit'}`;
+    } else if (receiver?.is_mixer || receiver?.entity_type === 'MIXER') {
+      role = 'mixer_deposit';
+      const entityStr = receiver.entity_name ? ` (${receiver.entity_name})` : '';
+      narrative = `🌪️ Mixer Obfuscation: ${tx.amount} ${tx.currency} injected into mixer pool ${shortenAddr(tx.to_address)}${entityStr}`;
+    } else if (receiver?.stopping_reason?.includes('Cold Storage')) {
+      role = 'peel';
+      narrative = `❄️ Cold Storage Accumulation: ${tx.amount} ${tx.currency} unspent at ${shortenAddr(tx.to_address)}`;
     } else {
       role = fromHop === 0 ? 'source_trunk' : 'peel';
       narrative = `Forwarded ${tx.amount} ${tx.currency} from ${shortenAddr(tx.from_address)} to ${shortenAddr(tx.to_address)}`;

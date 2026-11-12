@@ -28,8 +28,32 @@ export interface EndReceiverSummary {
   hop_depth: number;
   amount_reached: number;
   path: string[];
+  stopping_reason?: string;
+  entity_type?: 'EXCHANGE' | 'MIXER' | 'SANCTIONED' | string | null;
+  entity_name?: string | null;
+  is_terminal_cashout?: boolean;
+  is_mixer?: boolean;
   tags: string[];
   is_sink: boolean;
+}
+
+export interface AuditTrailStep {
+  step_number: number;
+  step_type: string;
+  node_address: string;
+  hop_depth: number;
+  details: Record<string, any>;
+  timestamp: number;
+  prev_hash: string;
+  step_hash: string;
+}
+
+export interface AuditTrailSummary {
+  target_address: string;
+  total_steps: number;
+  is_valid_chain: boolean;
+  latest_audit_hash: string;
+  steps: AuditTrailStep[];
 }
 
 export interface TraceResponse {
@@ -43,6 +67,7 @@ export interface TraceResponse {
   end_receivers: EndReceiverSummary[];
   viz_html_available: boolean;
   viz_html_path?: string | null;
+  audit_trail?: AuditTrailSummary | null;
   execution_time_ms: number;
 }
 
