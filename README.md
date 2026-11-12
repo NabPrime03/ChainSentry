@@ -26,9 +26,13 @@ This milestone establishes the end-to-end backend pipeline to verify **data extr
 
 3. **Graph Intelligence Engine (`server/core/`):**
    - In-memory directed graph using **`NetworkX`** (`DiGraph`).
-   - Multi-hop forward **BFS path tracing** from source wallet to end receivers.
-   - Real-time in-degree, out-degree, total received, total sent, and balance estimations.
-   - Identification of transaction sinks (end receivers).
+   - Priority-weighted forward **BFS path tracing** from source wallet to end receivers.
+   - **4 Forensic Stopping Conditions:**
+     1. *Terminal Cash-Out / Mixer Hit:* Flags exchange deposit addresses (e.g. Binance) or mixer pools (Tornado Cash) and terminates on-chain expansion.
+     2. *Cold Storage Sink:* Discovers unspent accumulation wallets (`out_degree == 0`).
+     3. *Max Hops Boundary:* Respects user-configured depth cutoff.
+     4. *Sub-Threshold Dilution Pruning:* Filters out negligible flows (< `min_amount_threshold`).
+   - Real-time in-degree, out-degree, flow volume, and documented stopping reasons.
 
 4. **Interactive Visualization Engine (`server/viz/`):**
    - Built with **`PyVis`** using ForceAtlas2 physics simulation.
@@ -38,8 +42,9 @@ This milestone establishes the end-to-end backend pipeline to verify **data extr
      - 🟢 **Green Nodes:** Destination Sinks / Exchange Cash-out
      - 🌫️ **Dotted Edges:** Adversarial Traps (Dusting / Poisoning) with warning tooltips.
 
-5. **Documentation & Architecture Guide (`docs/architecture.md`):**
-   - Complete technical specification and API contracts formatted for the frontend team.
+5. **Documentation & Mathematical Specifications:**
+   - [docs/architecture.md](file:///home/nab/hackathon/cryptotrace/docs/architecture.md): Complete technical specification and API contracts formatted for the frontend team.
+   - [docs/mathematical_specifications.md](file:///home/nab/hackathon/cryptotrace/docs/mathematical_specifications.md): Formal mathematical, probabilistic, and algorithmic equations (Exponential decay, Sigmoid risk classification, Shannon entropy, Peel-chain asymmetry, Bayesian confidence, and SHA-256 hash-chaining).
 
 ---
 
@@ -53,7 +58,8 @@ cryptotrace/
 │   ├── requirements.txt   # Backend dependencies
 │   ├── core/              # NetworkX Graph engine & Pydantic models
 │   │   ├── models.py      # Transaction, AddressNode, TraceResponse models
-│   │   └── graph.py       # Graph builder & BFS forward-tracer
+│   │   ├── entities.py    # Entity identification (Exchanges, Mixers, Sanctions)
+│   │   └── graph.py       # Graph builder & BFS forward-tracer with stopping logic
 │   ├── ingestion/         # Live APIs (Bitcoin/Ethereum) & forensic benchmarks
 │   │   ├── base.py        # Abstract provider interface
 │   │   ├── live_api.py    # Blockstream & Etherscan API client
@@ -178,6 +184,30 @@ When tracing completes, the API returns two outputs:
         "bc1q_change_hop2",
         "bc1q_binance_deposit_exchange"
       ],
+      "stopping_reason": "Terminal Cash-out Point Detected: Binance Deposit Address",
+      "entity_type": "EXCHANGE",
+      "entity_name": "Binance Deposit Address",
+      "is_terminal_cashout": true,
+      "is_mixer": false,
+      "tags": ["EXCHANGE:Binance Deposit Address"],
+      "is_sink": true
+    },
+    {
+      "address": "bc1q_change_hop3",
+      "hop_depth": 3,
+      "amount_reached": 4.499,
+      "path": [
+        "bc1q_hacker_ransomware_vault",
+        "bc1q_change_hop1",
+        "bc1q_change_hop2",
+        "bc1q_change_hop3"
+      ],
+      "stopping_reason": "Cold Storage Sink: funds unspent (out-degree: 0)",
+      "entity_type": null,
+      "entity_name": null,
+      "is_terminal_cashout": false,
+      "is_mixer": false,
+      "tags": [],
       "is_sink": true
     }
   ],
@@ -189,11 +219,13 @@ When tracing completes, the API returns two outputs:
 ### Output B: Interactive Visual Network (`/api/v1/graph/html`)
 - Opens directly in any browser or embeds seamlessly into an `<iframe>` inside the React dashboard.
 - **Physics simulation:** Drag nodes around, zoom in/out, hover over addresses for detailed metrics.
-- **Color-coded:**
-  - 🔴 **Red:** Source hacker wallet
-  - 🟡 **Amber:** Intermediary peel-chain hops
-  - 🟢 **Green:** Final destination wallets / cash-out exchanges
-  - 🌫️ **Dotted lines:** Adversarial dusting & look-alike poisoning attempts
+- **Color-coded & Shape Forensic Badges:**
+  - 🔴 **Red Dot:** Suspicious Source Wallet (Hacker)
+  - 🟢 **Emerald Diamond:** Terminal Exchange Cash-Out (Binance, Coinbase)
+  - 🟣 **Purple Star:** Obfuscation Mixer / Tumbler Pool (Tornado Cash)
+  - 🔵 **Cyan Dot:** Cold Storage Sink (Unspent funds, out-degree 0)
+  - 🟡 **Amber Dot:** Intermediary Peel-Chain Hop
+  - 🌫️ **Dotted Edge:** Flagged Adversarial Traps (Dusting / Address Poisoning) with hover warning tooltips
 
 ---
 

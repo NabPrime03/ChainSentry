@@ -47,6 +47,11 @@ class EndReceiverSummary(BaseModel):
     hop_depth: int
     amount_reached: float
     path: List[str]
+    stopping_reason: str = Field(default="Dormant cold storage wallet", description="Why tracing stopped at this node")
+    entity_type: Optional[str] = Field(default=None, description="Entity category: EXCHANGE, MIXER, SANCTIONED, or None")
+    entity_name: Optional[str] = Field(default=None, description="Human-readable entity name if identified")
+    is_terminal_cashout: bool = Field(default=False, description="True if this represents an off-chain exchange cash-out")
+    is_mixer: bool = Field(default=False, description="True if this is an obfuscation mixer/tumbler")
     tags: List[str] = Field(default_factory=list)
     is_sink: bool = False
 
@@ -63,4 +68,5 @@ class TraceResponse(BaseModel):
     end_receivers: List[EndReceiverSummary]
     viz_html_available: bool = False
     viz_html_path: Optional[str] = None
+    audit_trail: Optional[Dict[str, Any]] = Field(default=None, description="Cryptographic SHA-256 hash-chained log of every traversed node")
     execution_time_ms: float

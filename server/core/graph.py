@@ -1,12 +1,14 @@
 """
 Graph intelligence engine using NetworkX for CryptoTrace.
-Constructs directed transaction graphs and performs multi-hop path tracing.
+Constructs directed transaction graphs and performs multi-hop path tracing
+with heuristic stopping conditions (Cash-out, Mixer, Cold Storage, Max Hops, Dilution).
 """
 from typing import Dict, List, Set, Tuple, Optional, Any
 from collections import deque
 import networkx as nx
 
 from core.models import Transaction, AddressNode, EndReceiverSummary
+from core.entities import identify_entity
 
 
 class TransactionGraph:
@@ -20,16 +22,24 @@ class TransactionGraph:
         from_addr = tx.from_address
         to_addr = tx.to_address
 
-        # Ensure nodes exist
-        if not self.graph.has_node(from_addr):
-            self.graph.add_node(from_addr, tags=[], is_source=False)
-        if not self.graph.has_node(to_addr):
-            self.graph.add_node(to_addr, tags=[], is_source=False)
+        # Ensure nodes exist and attribute known entities
+        for addr in (from_addr, to_addr):
+            if not self.graph.has_node(addr):
+                etype, ename, is_term, is_mix = identify_entity(addr)
+                tags = []
+                if etype:
+                    tags.append(f"{etype}:{ename}")
+                self.graph.add_node(
+                    addr,
+                    tags=tags,
+                    is_source=False,
+                    entity_type=etype,
+                    entity_name=ename,
+                    is_terminal_cashout=is_term,
+                    is_mixer=is_mix,
+                )
 
-        # In NetworkX MultiDiGraph or DiGraph, we can store aggregate or list of edges.
-        # For our forensic tracer, we store the edge with transaction metadata.
         if self.graph.has_edge(from_addr, to_addr):
-            # Accumulate amount and preserve tx history
             edge = self.graph[from_addr][to_addr]
             edge["amount"] += tx.amount
             edge["tx_hashes"].append(tx.tx_hash)
@@ -80,27 +90,30 @@ class TransactionGraph:
         source_address: str,
         max_hops: int = 3,
         min_amount_threshold: float = 0.0,
+        max_branches_per_node: Optional[int] = 10,
     ) -> Dict[str, Any]:
         """
-        Executes a multi-hop forward BFS trace from the source address.
-        Identifies all reachable downstream addresses, paths, and potential end receivers.
+        Executes a priority-weighted multi-hop forward BFS trace from the source address.
+        Evaluates the 4 forensic stopping conditions:
+          1. Terminal Cash-Out (Exchange) or Mixer Pool
+          2. Cold Storage Sink (zero outgoing transfers)
+          3. Max Hops Boundary reached
+          4. Value Dilution / Pruning (< min_amount_threshold)
         """
         if not self.graph.has_node(source_address):
             return {
                 "visited_nodes": [],
                 "end_receivers": [],
-                "subgraph_nodes": [],
                 "subgraph_edges": [],
             }
 
         # Mark source
         self.graph.nodes[source_address]["is_source"] = True
 
-        visited_nodes: Dict[str, int] = {source_address: 0}  # address -> hop_depth
-        queue = deque([(source_address, 0, [source_address])])  # (curr, hops, path)
-        paths_discovered: List[Tuple[List[str], float]] = []
-        end_receivers: List[EndReceiverSummary] = []
+        visited_nodes: Dict[str, int] = {source_address: 0}
+        queue = deque([(source_address, 0, [source_address])])
         subgraph_edges = []
+        end_receivers_map: Dict[str, EndReceiverSummary] = {}
 
         while queue:
             curr_addr, hops, current_path = queue.popleft()
@@ -108,11 +121,20 @@ class TransactionGraph:
             if hops >= max_hops:
                 continue
 
-            for next_addr in self.graph.successors(curr_addr):
+            # Prioritize outgoing transfers by amount descending (follow the main money flow first!)
+            successors = sorted(
+                self.graph.successors(curr_addr),
+                key=lambda x: self.graph[curr_addr][x].get("amount", 0.0),
+                reverse=True,
+            )
+            if max_branches_per_node is not None and len(successors) > max_branches_per_node:
+                successors = successors[:max_branches_per_node]
+
+            for next_addr in successors:
                 edge_data = self.graph[curr_addr][next_addr]
                 amount = edge_data.get("amount", 0.0)
 
-                # Skip edges below threshold if specified
+                # Stopping Condition 4: Value Dilution / Sub-threshold Pruning
                 if amount < min_amount_threshold:
                     continue
 
@@ -120,43 +142,68 @@ class TransactionGraph:
                 new_path = current_path + [next_addr]
                 new_hops = hops + 1
 
-                # Record path
-                paths_discovered.append((new_path, amount))
-
-                # Update visited distance (shortest hop recorded)
                 if next_addr not in visited_nodes or new_hops < visited_nodes[next_addr]:
                     visited_nodes[next_addr] = new_hops
 
-                # If this address has no further outgoing transactions or reaches max_hops,
-                # it is a candidate end receiver (sink)
+                node_attrs = self.graph.nodes.get(next_addr, {})
+                etype, ename, is_term, is_mix = identify_entity(next_addr)
                 out_deg = self.graph.out_degree(next_addr)
-                is_sink = (out_deg == 0) or (new_hops == max_hops)
 
-                if is_sink:
-                    # Collect end receiver summary
-                    tags = self.graph.nodes[next_addr].get("tags", [])
-                    end_receivers.append(
-                        EndReceiverSummary(
-                            address=next_addr,
-                            hop_depth=new_hops,
-                            amount_reached=round(amount, 6),
-                            path=new_path,
-                            tags=tags,
-                            is_sink=(out_deg == 0),
-                        )
+                should_stop_branch = False
+                stopping_reason = ""
+
+                # Stopping Condition 1: Terminal Cashout at Exchange or Mixer Tumbler
+                if is_term or is_mix:
+                    should_stop_branch = True
+                    if is_mix:
+                        stopping_reason = f"Mixer Tumbler Pool Detected: {ename}"
+                    else:
+                        stopping_reason = f"Terminal Cash-out Point Detected: {ename}"
+                # Stopping Condition 2: Cold Storage Sink (Funds unspent)
+                elif out_deg == 0:
+                    should_stop_branch = True
+                    stopping_reason = "Cold Storage Sink: funds unspent (out-degree: 0)"
+                # Stopping Condition 3: Reached Max Hops Limit
+                elif new_hops == max_hops:
+                    should_stop_branch = True
+                    stopping_reason = f"Max search depth boundary reached ({max_hops} hops)"
+
+                if should_stop_branch:
+                    self.graph.nodes[next_addr]["stopping_reason"] = stopping_reason
+                    tags = list(node_attrs.get("tags", []))
+                    if etype and f"{etype}:{ename}" not in tags:
+                        tags.append(f"{etype}:{ename}")
+
+                    end_receivers_map[next_addr] = EndReceiverSummary(
+                        address=next_addr,
+                        hop_depth=new_hops,
+                        amount_reached=round(amount, 6),
+                        path=new_path,
+                        stopping_reason=stopping_reason,
+                        entity_type=etype,
+                        entity_name=ename,
+                        is_terminal_cashout=is_term,
+                        is_mixer=is_mix,
+                        tags=tags,
+                        is_sink=(out_deg == 0 or is_term or is_mix),
                     )
+                else:
+                    # Continue expanding this branch in the loop
+                    if new_hops < max_hops:
+                        queue.append((next_addr, new_hops, new_path))
 
-                if new_hops < max_hops:
-                    queue.append((next_addr, new_hops, new_path))
-
-        # Build AddressNode list for all visited addresses
         nodes_summary = [
             self.get_address_node(addr, hop_distance=hop)
             for addr, hop in visited_nodes.items()
         ]
 
+        # Sort end receivers by amount received descending
+        ranked_end_receivers = sorted(
+            end_receivers_map.values(), key=lambda r: r.amount_reached, reverse=True
+        )
+
         return {
             "visited_nodes": nodes_summary,
-            "end_receivers": end_receivers,
+            "end_receivers": ranked_end_receivers,
             "subgraph_edges": subgraph_edges,
         }

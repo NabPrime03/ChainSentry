@@ -52,7 +52,23 @@ flowchart TD
 
 ---
 
-## 3. Directory Layout (Rooted at `/cryptotrace`)
+## 3. Intelligent Traversal & Forensic Stopping Conditions
+
+Rather than blindly expanding every transaction path, the graph traversal engine (`core/graph.py`) prioritizes high-value flow (peel-chain trunks) and enforces **4 forensic stopping conditions**:
+
+1. **Terminal Cash-Out (Exchange) or Mixer Pool:**
+   - Identified via `core/entities.py` (Binance, Coinbase, Kraken, Tornado Cash).
+   - Once funds enter a custodial exchange or tumbler, on-chain public tracking ceases. The branch terminates, flagging the exchange/mixer as an **End Receiver**.
+2. **Cold Storage Sink (Dormant Accumulation):**
+   - When a recipient wallet has `out_degree == 0` (unspent funds), tracing stops and attributes the wallet as a cold storage sink.
+3. **Max Hop Depth Boundary:**
+   - Tracing stops when the configurable depth limit (`max_hops`, default 3) is reached, preventing infinite recursion.
+4. **Sub-Threshold Pruning (Dilution Guard):**
+   - Transferred amounts below `min_amount_threshold` are pruned from traversal, preventing spam/dust noise from expanding.
+
+---
+
+## 4. Directory Layout (Rooted at `/cryptotrace`)
 
 ```
 cryptotrace/
@@ -62,6 +78,7 @@ cryptotrace/
 │   ├── requirements.txt   # Backend Python packages
 │   ├── core/              # Graph engine and data definitions
 │   │   ├── models.py      # Pydantic models (Transaction, AddressNode, TraceResponse)
+│   │   ├── entities.py    # Entity identification (Exchanges, Mixers, Sanctions)
 │   │   └── graph.py       # NetworkX DiGraph builder & multi-hop BFS tracer
 │   ├── ingestion/         # Multi-source blockchain data ingestion
 │   │   ├── base.py        # Abstract Base Provider
@@ -163,6 +180,29 @@ cryptotrace/
         "bc1q_change_hop2",
         "bc1q_binance_deposit_exchange"
       ],
+      "stopping_reason": "Terminal Cash-out Point Detected: Binance Deposit Address",
+      "entity_type": "EXCHANGE",
+      "entity_name": "Binance Deposit Address",
+      "is_terminal_cashout": true,
+      "is_mixer": false,
+      "tags": ["EXCHANGE:Binance Deposit Address"],
+      "is_sink": true
+    },
+    {
+      "address": "bc1q_change_hop3",
+      "hop_depth": 3,
+      "amount_reached": 4.499,
+      "path": [
+        "bc1q_hacker_ransomware_vault",
+        "bc1q_change_hop1",
+        "bc1q_change_hop2",
+        "bc1q_change_hop3"
+      ],
+      "stopping_reason": "Cold Storage Sink: funds unspent (out-degree: 0)",
+      "entity_type": null,
+      "entity_name": null,
+      "is_terminal_cashout": false,
+      "is_mixer": false,
       "tags": [],
       "is_sink": true
     }

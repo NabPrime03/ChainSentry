@@ -64,9 +64,14 @@ def test_graph_construction_and_trace():
     assert HACKER_SOURCE_BTC in visited_addrs
     assert EXCHANGE_CASHOUT_BTC in visited_addrs
 
-    # Verify end receivers list contains Binance cashout
+    # Verify end receivers list contains Binance cashout with stopping reason
     receivers = [r.address for r in trace_res["end_receivers"]]
     assert EXCHANGE_CASHOUT_BTC in receivers
+
+    binance_receiver = next(r for r in trace_res["end_receivers"] if r.address == EXCHANGE_CASHOUT_BTC)
+    assert binance_receiver.is_terminal_cashout is True
+    assert "Binance" in binance_receiver.entity_name
+    assert "Cash-out" in binance_receiver.stopping_reason
 
 
 def test_api_trace_endpoint():
@@ -86,6 +91,27 @@ def test_api_trace_endpoint():
     assert body["total_edges"] >= 4
     assert body["viz_html_available"] is True
     assert len(body["end_receivers"]) > 0
+
+    # Verify cryptographic audit trail
+    assert "audit_trail" in body
+    audit = body["audit_trail"]
+    assert audit is not None
+    assert audit["is_valid_chain"] is True
+    assert audit["total_steps"] >= 3
+    assert len(audit["steps"]) >= 3
+
+
+def test_audit_trail_tamper_detection():
+    """Verify cryptographic audit trail detects if step payload is tampered with."""
+    from cybersecurity.audit_trail import AuditTrail
+    audit = AuditTrail(target_address=HACKER_SOURCE_BTC)
+    audit.record_step("HOP_1", "addr_1", 1, {"amount": 5.0})
+    audit.record_step("HOP_2", "addr_2", 2, {"amount": 4.5})
+    assert audit.verify_integrity() is True
+
+    # Tamper with step details
+    audit.steps[1].details["amount"] = 999.0
+    assert audit.verify_integrity() is False
 
 
 def test_graph_html_endpoint():
