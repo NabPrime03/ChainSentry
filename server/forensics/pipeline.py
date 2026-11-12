@@ -88,31 +88,47 @@ def evaluate_peel_chain(
             reason="No outgoing transactions available to evaluate for peel chains.",
         )
 
-    tx_by_sender: Dict[str, List[Transaction]] = {}
+    # Group outputs by individual transaction hash to evaluate each split independently
+    tx_by_hash: Dict[str, Dict[str, Any]] = {}
     for tx in transactions:
-        tx_by_sender.setdefault(tx.from_address, []).append(tx)
+        tx_by_hash.setdefault(tx.tx_hash, {"from": tx.from_address, "outputs": []})
+        tx_by_hash[tx.tx_hash]["outputs"].append({"address": tx.to_address, "value": tx.amount})
 
+    peel_txs: List[Dict[str, Any]] = []
+    peel_by_sender: Dict[str, List[Dict[str, Any]]] = {}
+
+    for tx_hash, info in tx_by_hash.items():
+        if len(info["outputs"]) >= 2:
+            res: PeelChainResult = detect_peel_chain(info["outputs"])
+            if res.is_peel_chain and res.trunk_wallet:
+                peel_entry = {
+                    "tx_hash": tx_hash,
+                    "from": info["from"],
+                    "trunk": res.trunk_wallet,
+                    "asymmetry": res.asymmetry_metric,
+                    "peeled_vol": res.total_volume * (1.0 - res.trunk_share),
+                    "total_vol": res.total_volume,
+                }
+                peel_txs.append(peel_entry)
+                peel_by_sender.setdefault(info["from"], []).append(peel_entry)
+
+    # Trace consecutive hops starting from target_address down trunk wallets
     consecutive_hops = 0
     total_peeled_amount = 0.0
     current_addr = target_address
     visited = set()
     last_trunk = None
 
-    while current_addr in tx_by_sender and current_addr not in visited:
+    while current_addr in peel_by_sender and current_addr not in visited:
         visited.add(current_addr)
-        outgoing = tx_by_sender[current_addr]
-        
-        outputs = [{"address": tx.to_address, "value": tx.amount} for tx in outgoing]
-        if len(outputs) >= 2:
-            res: PeelChainResult = detect_peel_chain(outputs)
-            if res.is_peel_chain and res.trunk_wallet:
-                consecutive_hops += 1
-                peeled_val = res.total_volume - (res.total_volume * res.trunk_share)
-                total_peeled_amount += peeled_val
-                last_trunk = res.trunk_wallet
-                current_addr = res.trunk_wallet
-                continue
-        break
+        peels = peel_by_sender[current_addr]
+        best_peel = max(peels, key=lambda p: p["total_vol"])
+        consecutive_hops += 1
+        total_peeled_amount += best_peel["peeled_vol"]
+        last_trunk = best_peel["trunk"]
+        current_addr = best_peel["trunk"]
+
+    total_peel_count = len(peel_txs)
 
     if consecutive_hops >= 2:
         risk = min(35.0, 20.0 + (consecutive_hops * 5.0))
@@ -122,11 +138,13 @@ def evaluate_peel_chain(
             status="FLAGGED",
             reason=f"{consecutive_hops} consecutive peel hops detected{trunk_label}; {round(total_peeled_amount, 4)} volume peeled off while bulk remained on trunk.",
         )
-    elif consecutive_hops == 1:
+    elif consecutive_hops == 1 or total_peel_count >= 1:
+        risk = 25.0 if total_peel_count >= 2 else 15.0
+        status = "FLAGGED" if total_peel_count >= 2 else "SUSPICIOUS"
         return FunctionRisk(
-            risk_score=15.0,
-            status="SUSPICIOUS",
-            reason=f"Single peel-off transaction detected; {round(total_peeled_amount, 4)} volume peeled to satellite address.",
+            risk_score=risk,
+            status=status,
+            reason=f"{total_peel_count} peel-off transaction(s) detected; asymmetric change splits routing funds to satellite wallets.",
         )
     else:
         return FunctionRisk(

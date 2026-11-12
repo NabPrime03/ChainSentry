@@ -52,7 +52,9 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
             elapsed_ms = round((time.time() - t_start) * 1000, 1)
             if btc_txs:
                 logger.info("   📥 Ingested %d transaction(s) for %s (took %.1fms)", len(btc_txs), clean_addr[:16], elapsed_ms)
-                self._tx_cache[clean_addr] = btc_txs
+                has_out = any(t.from_address == clean_addr for t in btc_txs)
+                if has_out:
+                    self._tx_cache[clean_addr] = btc_txs
                 return btc_txs
 
         # 3. If it's an Ethereum address, query Etherscan
@@ -303,9 +305,146 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
                                     )
                                 )
 
+            # If the address has NO outgoing transactions in the current sample window
+            # but has historically spent funds, perform spend-seeking ingestion
+            has_outgoing = any(t.from_address == address for t in transactions)
+            if not has_outgoing:
+                historical_spends = self._fetch_historical_spends_blockchain_info(address, seen_edges)
+                if historical_spends:
+                    transactions.extend(historical_spends)
+
             return transactions
         except Exception as exc:
             logger.warning("Failed to fetch live Bitcoin transactions: %s", exc)
+            return []
+
+    def _fetch_historical_spends_blockchain_info(
+        self, address: str, seen_edges: Set[str], max_spends: int = 15
+    ) -> List[Transaction]:
+        """
+        When the latest 25 transactions contain zero outgoing spends due to incoming dust/noise screening,
+        this method locates actual historical spending transactions where funds exited the wallet.
+        Checks local historical spend cache first, then queries blockchain.info with offset sampling.
+        """
+        import os, json
+
+        # 1. Check local persistent store for curated / previously resolved historical spends
+        cache_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical_spends.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    store = json.load(f)
+                if address in store and store[address]:
+                    cached_records = store[address]
+                    spends = []
+                    for item in cached_records:
+                        edge_key = f"{item['tx_hash']}_{item['from_address']}_{item['to_address']}"
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            spends.append(Transaction(**item))
+                    if spends:
+                        logger.info(
+                            "   ⚡ [Spend-Seeking Cache] Loaded %d historical outgoing spend edge(s) for %s from local store",
+                            len(spends),
+                            address[:16],
+                        )
+                        return spends
+            except Exception as exc:
+                logger.warning("Failed reading historical spend cache: %s", exc)
+
+        # 2. Live offset sampling via blockchain.info
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            r = requests.get(f"https://blockchain.info/rawaddr/{address}?limit=1", headers=headers, timeout=self.timeout)
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            n_tx = data.get("n_tx", 0)
+            if n_tx <= 25:
+                return []
+
+            logger.info(
+                "   🔍 [Spend-Seeking Ingestion] Address %s has %d total txs but 0 outgoing in recent page. Probing historical spending offsets...",
+                address[:16],
+                n_tx,
+            )
+
+            # Sample offsets across the address's active operational window
+            start_offset = max(25, int(n_tx * 0.65))
+            end_offset = min(n_tx, int(n_tx * 0.95))
+            step = max(50, (end_offset - start_offset) // 6) if end_offset > start_offset else 50
+
+            spends: List[Transaction] = []
+            seen_hashes: Set[str] = set()
+
+            for offset in range(start_offset, end_offset + 1, step):
+                url = f"https://blockchain.info/rawaddr/{address}?offset={offset}&limit=50"
+                res = requests.get(url, headers=headers, timeout=self.timeout)
+                if res.status_code != 200:
+                    continue
+
+                for raw_tx in res.json().get("txs", []):
+                    tx_hash = raw_tx.get("hash")
+                    if not tx_hash or tx_hash in seen_hashes:
+                        continue
+
+                    # Verify address was an input (actual spend)
+                    inputs = [i.get("prev_out", {}).get("addr") for i in raw_tx.get("inputs", [])]
+                    if address in inputs:
+                        seen_hashes.add(tx_hash)
+                        block_time = raw_tx.get("time", 0)
+                        block_height = raw_tx.get("block_height")
+                        fee_btc = raw_tx.get("fee", 0) / 100_000_000.0
+
+                        for vout in raw_tx.get("out", []):
+                            to_addr = vout.get("addr")
+                            val_btc = vout.get("value", 0) / 100_000_000.0
+                            if to_addr and to_addr != address and val_btc > 0:
+                                edge_key = f"{tx_hash}_{address}_{to_addr}"
+                                if edge_key not in seen_edges:
+                                    seen_edges.add(edge_key)
+                                    spends.append(
+                                        Transaction(
+                                            tx_hash=tx_hash,
+                                            from_address=address,
+                                            to_address=to_addr,
+                                            amount=round(val_btc, 8),
+                                            currency="BTC",
+                                            timestamp=block_time,
+                                            fee=round(fee_btc, 8),
+                                            block_number=block_height,
+                                        )
+                                    )
+
+                        if len(seen_hashes) >= max_spends:
+                            break
+
+                if len(seen_hashes) >= max_spends:
+                    break
+
+            if spends:
+                logger.info(
+                    "   📥 [Spend-Seeking Ingestion] Extracted %d outgoing spend edge(s) across %d historical transactions for %s",
+                    len(spends),
+                    len(seen_hashes),
+                    address[:16],
+                )
+                # Persist discovered spends
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    existing = {}
+                    if os.path.exists(cache_path):
+                        with open(cache_path, "r") as f:
+                            existing = json.load(f)
+                    existing[address] = [s.dict() for s in spends]
+                    with open(cache_path, "w") as f:
+                        json.dump(existing, f, indent=2)
+                except Exception:
+                    pass
+
+            return spends
+        except Exception as exc:
+            logger.warning("Historical spend-seeking failed for %s: %s", address[:16], exc)
             return []
 
     def _fetch_ethereum_transactions(self, address: str) -> List[Transaction]:

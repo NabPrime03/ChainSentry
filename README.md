@@ -27,9 +27,20 @@ ChainSentry provides an end-to-end forensic intelligence pipeline to reconstruct
   - Settings modal for configuring backend endpoints, Etherscan API keys, and Blockstream keys.
 - **Inspection Drawer:** Click any wallet node or transfer amount badge to inspect transaction hashes, addresses, and balances.
 
-### 2. FastAPI Backend Engine (`server/`):
+### 2. FastAPI Backend & Forensic Risk Engine (`server/`):
 - **CORS Enabled:** Configured for local or remote frontend instances on any port.
-- `POST /api/v1/trace`: Accepts an address or transaction ID, executes recursive multi-hop BFS traversal, generates a tamper-evident audit trail, and returns structured graph nodes, edges, and destination sinks.
+- **8 Modular Forensic Detection Modules (`server/forensics/pipeline.py`):**
+  1. `peel_chain`: Asymmetric change-address peeling ($\Delta_{\text{peel}} \ge 0.85$) across multi-hop trunks.
+  2. `terminal_sink`: Identifies cash-out deposit addresses (Binance, Coinbase) and privacy mixer pools (Tornado Cash).
+  3. `sanctions`: Direct and indirect OFAC/ransomware matches with exponential distance decay ($0.5^{\text{hop}}$).
+  4. `dusting_attack`: Identifies adversarial sub-economic tracking dust ($\le 546$ / $330-332$ satoshis).
+  5. `address_poisoning`: Detects look-alike vanity spoofing decoys ($\ge 4$ prefix/suffix match with 0-value transfers).
+  6. `mixer_entropy`: Calculates Normalized Shannon Information Entropy ($E_{\text{norm}} \ge 0.92$) across equal-denomination CoinJoin pools.
+  7. `cluster_recombination`: Flags Common-Input Ownership Clustering where mule wallets co-spend inputs in the same transaction.
+  8. `mining_origin`: Identifies newly minted Proof-of-Work Coinbase block rewards.
+- **Bayesian Certainty Saturation:** Evaluates epistemic certainty $\mathcal{C}(N, V) = (1 - e^{-0.15 N})(1 - e^{-0.25 V})$ (0-100%).
+- **Calibrated False-Positive Resistance:** Separates active criminal laundering from passive targeting (dust victims), and whitelists verified public charities (`KNOWN_BENIGN`) like Internet Archive and Wikimedia.
+- `POST /api/v1/trace`: Accepts an address or transaction ID, executes recursive multi-hop BFS traversal, runs all 8 forensic modules, and returns the complete dossier.
 - `GET /api/v1/graph/html`: Serves the physics-based interactive PyVis graph directly in any browser or `<iframe>`.
 - `GET /api/v1/benchmarks`: Provides pre-packaged ground-truth scenarios for zero-downtime evaluation.
 - `GET /api/v1/health`: Operational health check.
@@ -89,6 +100,9 @@ ChainSentry/
 │   │   ├── models.py              # Transaction, AddressNode, TraceResponse models
 │   │   ├── entities.py            # Known entity registry (Binance, Tornado Cash)
 │   │   └── graph.py               # Graph builder & BFS forward-tracer with stopping logic
+│   ├── forensics/                 # Modular Forensic Detection Engine
+│   │   ├── peel_chain.py          # Generalized change-address asymmetry algorithm
+│   │   └── pipeline.py            # Master orchestrator (8 detectors + Bayesian certainty)
 │   ├── cybersecurity/             # Security & verification modules
 │   │   └── audit_trail.py         # Cryptographic SHA-256 tamper-evident hash chain
 │   ├── ingestion/                 # Live APIs (Bitcoin/Ethereum) & forensic benchmarks
@@ -115,6 +129,7 @@ ChainSentry/
         ├── services/              # API layer with auto-port detection & key management
         │   └── api.ts
         └── components/            # UI Components
+            ├── ForensicReportPanel.tsx# Threat score & 8-module evidence dossier
             ├── ChainFlowPipeline.tsx  # Horizontal connection pipeline matching diagram
             ├── ConnectionFlowChart.tsx# Stepped vertical flow chart
             ├── ApiKeyModal.tsx        # API Key & endpoint configuration modal

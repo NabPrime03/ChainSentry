@@ -201,3 +201,32 @@ def test_forensic_pipeline_mixer_entropy():
     assert "equal-denomination mixer pool" in report.function_risks["mixer_entropy"].reason.lower()
 
 
+def test_forensic_pipeline_peel_chain_consecutive():
+    """Verify peel chain detector tracks multi-hop peel transactions along trunk wallets."""
+    pipeline = ForensicPipeline()
+    txs = [
+        # Hop 0: 1Target peels 0.05 BTC, sends 1.5 BTC to 1TrunkHop1
+        Transaction(tx_hash="tx_peel_1", from_address="1Target", to_address="1Peeled1", amount=0.05, timestamp=1000),
+        Transaction(tx_hash="tx_peel_1", from_address="1Target", to_address="1TrunkHop1", amount=1.5, timestamp=1000),
+        # Hop 1: 1TrunkHop1 peels 0.08 BTC, sends 1.4 BTC to 1TrunkHop2
+        Transaction(tx_hash="tx_peel_2", from_address="1TrunkHop1", to_address="1Peeled2", amount=0.08, timestamp=1050),
+        Transaction(tx_hash="tx_peel_2", from_address="1TrunkHop1", to_address="1TrunkHop2", amount=1.4, timestamp=1050),
+    ]
+    nodes = [
+        AddressNode(address="1Target", is_source=True, hop_distance=0),
+        AddressNode(address="1TrunkHop1", hop_distance=1),
+        AddressNode(address="1TrunkHop2", hop_distance=2),
+    ]
+    report = pipeline.analyze(
+        target_address="1Target",
+        nodes=nodes,
+        transactions=txs,
+        end_receivers=[],
+        max_hops=2,
+    )
+    assert report.function_risks["peel_chain"].status == "FLAGGED"
+    assert report.function_risks["peel_chain"].risk_score >= 30.0
+    assert "consecutive peel hops" in report.function_risks["peel_chain"].reason.lower()
+
+
+
