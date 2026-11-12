@@ -1,10 +1,10 @@
 # ChainSentry 🛡️🔍
 ### Confidence-Aware Blockchain Forensics, Transaction Flow Intelligence & Adversarial Detection
 
-> **Status:** Full-Stack Forensic System Implemented & Tested  
-> **Backend:** Python + FastAPI + NetworkX + PyVis + Multi-Source Ingestion (`server/`)  
-> **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS (`client/`)  
-> **Package Managers:** `uv` (Python), `npm` (Node.js)  
+> **Status:** Full-Stack Forensic System Implemented & Tested
+> **Backend:** Python + FastAPI + NetworkX + PyVis + Multi-Source Ingestion (`server/`)
+> **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS (`client/`)
+> **Package Managers:** `uv` (Python), `npm` (Node.js)
 > **Repository Layout:** Clean Monorepo (`server/`, `client/`, `docs/`, `Makefile`)
 
 ---
