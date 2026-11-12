@@ -15,6 +15,11 @@ SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
+from core.logger import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger("cryptotrace")
+
 try:
     from routes import router
 except ImportError:
@@ -23,6 +28,7 @@ except ImportError:
 
 def create_app() -> FastAPI:
     """Builds and configures the FastAPI application instance."""
+    logger.info("Building CryptoTrace FastAPI application factory...")
     app = FastAPI(
         title="CryptoTrace Forensic Intelligence API",
         description=(

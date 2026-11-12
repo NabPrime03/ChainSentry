@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 
 from core.models import TraceRequest, TraceResponse
 from core.graph import TransactionGraph
+from core.logger import get_logger
 from cybersecurity.audit_trail import AuditTrail
 from ingestion.live_api import UnifiedBlockchainProvider
 from ingestion.benchmark import (
@@ -23,6 +24,7 @@ from viz.renderer import render_trace_to_html
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 router = APIRouter(prefix="/api/v1")
 provider = UnifiedBlockchainProvider()
+logger = get_logger(__name__)
 
 
 @router.get("/health")
@@ -67,6 +69,7 @@ def trace_address(request: TraceRequest):
     """
     start_time = time.time()
     target_addr = request.target_address.strip()
+    logger.info("Initiating forensic trace for %s (max_hops=%d, currency=%s)", target_addr, request.max_hops, request.currency)
 
     if not target_addr:
         raise HTTPException(status_code=400, detail="Target address cannot be empty.")
@@ -171,6 +174,13 @@ def trace_address(request: TraceRequest):
             viz_available = False
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
+    logger.info(
+        "Trace completed in %.2fms: %d nodes, %d edges, %d end receivers",
+        elapsed_ms,
+        len(visited_nodes_list),
+        len(trace_result["subgraph_edges"]),
+        len(end_receivers_list),
+    )
 
     # Filter and cap returned transactions to those involving visited nodes (up to 100 max)
     # This prevents megabytes of raw transactions from choking the HTTP client / frontend

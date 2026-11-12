@@ -3,15 +3,17 @@ Live blockchain data provider supporting Bitcoin (Blockstream Esplora API)
 and Ethereum (Etherscan public API), with fallback to benchmark fixtures.
 Includes accurate Bitcoin UTXO (vin/prevout vs vout) directional parsing.
 """
-import logging
-from typing import List, Set
+import time
+from typing import List, Set, Dict
 import requests
 
+from core.logger import get_logger
 from core.models import Transaction
+from forensics.peel_chain import detect_peel_chain
 from ingestion.base import BaseBlockchainProvider
 from ingestion.benchmark import get_benchmark_transactions, HACKER_SOURCE_BTC, MIXER_SOURCE_ETH
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class UnifiedBlockchainProvider(BaseBlockchainProvider):
@@ -28,34 +30,43 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
     def fetch_transactions_for_address(self, address: str) -> List[Transaction]:
         """Fetches transactions for an address, checking cache, benchmarks, or live APIs."""
         clean_addr = address.strip()
+        t_start = time.time()
 
         # In-memory cache hit
         if clean_addr in self._tx_cache:
-            return self._tx_cache[clean_addr]
+            cached_txs = self._tx_cache[clean_addr]
+            logger.info("   ⚡ [Cache Hit] Address %s... (%d transactions)", clean_addr[:16], len(cached_txs))
+            return cached_txs
 
         # 1. Check if this is a known benchmark address
         if clean_addr in [HACKER_SOURCE_BTC, MIXER_SOURCE_ETH] or "hacker" in clean_addr.lower() or "benchmark" in clean_addr.lower():
-            logger.info("Serving transactions from forensic benchmark corpus for %s", clean_addr)
+            logger.info("   📦 [Benchmark Corpus] Serving deterministic benchmark data for %s", clean_addr)
             txs = get_benchmark_transactions(clean_addr)
             self._tx_cache[clean_addr] = txs
             return txs
 
         # 2. If it's a Bitcoin address, query Blockstream Esplora API
         if clean_addr.startswith(("bc1", "1", "3")):
+            logger.info("   🌐 [Live BTC API] Querying Blockstream Esplora for %s...", clean_addr[:16])
             btc_txs = self._fetch_bitcoin_transactions(clean_addr)
+            elapsed_ms = round((time.time() - t_start) * 1000, 1)
             if btc_txs:
+                logger.info("   📥 Ingested %d transaction(s) for %s (took %.1fms)", len(btc_txs), clean_addr[:16], elapsed_ms)
                 self._tx_cache[clean_addr] = btc_txs
                 return btc_txs
 
         # 3. If it's an Ethereum address, query Etherscan
         if clean_addr.startswith("0x") and len(clean_addr) == 42:
+            logger.info("   🌐 [Live ETH API] Querying Etherscan for %s...", clean_addr[:16])
             eth_txs = self._fetch_ethereum_transactions(clean_addr)
+            elapsed_ms = round((time.time() - t_start) * 1000, 1)
             if eth_txs:
+                logger.info("   📥 Ingested %d transaction(s) for %s (took %.1fms)", len(eth_txs), clean_addr[:16], elapsed_ms)
                 self._tx_cache[clean_addr] = eth_txs
                 return eth_txs
 
         # Fallback to benchmark corpus if live APIs return no results or fail
-        logger.warning("Falling back to benchmark data for address %s", clean_addr)
+        logger.warning("   ⚠️ Falling back to benchmark data for address %s", clean_addr)
         fallback = get_benchmark_transactions(clean_addr)
         self._tx_cache[clean_addr] = fallback
         return fallback
@@ -77,8 +88,10 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
 
         # For benchmark scenarios, benchmark fixtures already include complete multi-hop chains
         if clean_addr in [HACKER_SOURCE_BTC, MIXER_SOURCE_ETH] or "hacker" in clean_addr.lower() or "benchmark" in clean_addr.lower():
+            logger.info("📦 [Crawler] Serving benchmark scenario for %s", clean_addr)
             return get_benchmark_transactions(clean_addr)
 
+        logger.info("🚀 [Crawler] Starting multi-hop discovery for %s (max_hops=%d, limit=%d addresses)", clean_addr, max_hops, max_total_crawled)
         all_transactions: List[Transaction] = []
         seen_keys: Set[str] = set()
         crawled_addresses: Set[str] = set()
@@ -88,6 +101,7 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
         from core.entities import identify_entity
 
         for hop in range(max_hops):
+            logger.info("   ↳ [Hop %d/%d] Frontier contains %d address(es): %s", hop + 1, max_hops, len(frontier), [a[:12] + "..." for a in frontier])
             next_frontier: List[str] = []
 
             for addr in frontier:
@@ -206,6 +220,22 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
 
                 # Case A: Address is one of the SENDERS (Outgoing transfer)
                 if address in input_senders:
+                    # Evaluate Peel Chain heuristic on outgoing transaction
+                    peel_candidates = [
+                        {"address": v.get("scriptpubkey_address", "unknown"), "value": v.get("value", 0) / 100_000_000.0}
+                        for v in vouts if v.get("scriptpubkey_address")
+                    ]
+                    peel_result = detect_peel_chain(peel_candidates)
+                    if peel_result.is_peel_chain:
+                        logger.info(
+                            "   🔬 [Peel Chain Detected] Tx: %s... │ Asymmetry: %.2f │ Trunk: %s (%.1f%%) │ Peeled: %d wallet(s)",
+                            tx_id[:12],
+                            peel_result.asymmetry_metric,
+                            peel_result.trunk_wallet[:16] if peel_result.trunk_wallet else "None",
+                            peel_result.trunk_share * 100,
+                            len(peel_result.peeled_wallets),
+                        )
+
                     # If this transaction has a huge fanout (e.g. mining pool payout batch),
                     # prioritize the top 25 highest-value outputs to keep latency and payload nimble
                     candidate_vouts = vouts
