@@ -197,26 +197,29 @@ When tracing completes, the API returns two outputs:
 
 ---
 
-## 6. How to Run and Test (Using `uv`)
+## 6. How to Run and Test (Using `make` or `uv`)
 
-### Step 1: Install Dependencies
+### Quick Start with Makefile
+```bash
+make help          # View all available shortcut commands
+make dev           # Show ports table & launch FastAPI backend in reload mode
+make ports         # Inspect currently running services and listening ports
+make test          # Run automated test suite (5 passed in ~0.5s)
+make test-trace    # Test tracing endpoint with sample hacker address
+make clean         # Clear caches and temp files
+```
+
+### Or Manually via `uv`:
 ```bash
 # In the project root:
 uv venv
 uv pip install -r server/requirements.txt
-```
 
-### Step 2: Run the Automated Test Suite
-```bash
-# Run tests from server/ or root:
+# Run tests:
 uv run pytest server/
-```
-*(All 5 tests pass in ~0.5s)*
 
-### Step 3: Start the Backend Server
-```bash
-cd server
-uv run python main.py
+# Start server:
+cd server && uv run python main.py
 ```
 The server will start at `http://localhost:8000`:
 - **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
