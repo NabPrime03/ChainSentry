@@ -74,10 +74,10 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
     def crawl_multihop_transactions(
         self,
         root_address: str,
-        max_hops: int = 3,
+        max_hops: int = 5,
         max_branches_per_hop: int = 2,
         min_amount_threshold: float = 0.0001,
-        max_total_crawled: int = 5,
+        max_total_crawled: int = 20,
     ) -> List[Transaction]:
         """
         Recursively crawls live transactions up to max_hops.
@@ -134,20 +134,33 @@ class UnifiedBlockchainProvider(BaseBlockchainProvider):
                             outgoing_by_receiver.get(tx.to_address, 0.0) + tx.amount
                         )
 
-                # Prioritize top outgoing branches for the next hop
+                # Prioritize outgoing branches for next hop (Peel chain trunk-focused to allow deep hops)
                 if hop < max_hops - 1 and outgoing_by_receiver:
-                    sorted_receivers = sorted(
-                        [
-                            (rec, amt)
-                            for rec, amt in outgoing_by_receiver.items()
-                            if amt >= min_amount_threshold and rec not in crawled_addresses
-                        ],
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )
-                    for rec, _ in sorted_receivers[:max_branches_per_hop]:
-                        if rec not in next_frontier:
-                            next_frontier.append(rec)
+                    peel_candidates = [{"address": r, "value": amt} for r, amt in outgoing_by_receiver.items()]
+                    peel_eval = detect_peel_chain(peel_candidates) if len(peel_candidates) >= 2 else None
+
+                    if peel_eval and peel_eval.is_peel_chain and peel_eval.trunk_wallet:
+                        logger.info(
+                            "      🔬 [Peel Chain Trunk Focus] Directing crawl exclusively down trunk: %s (share=%.1f%%)",
+                            peel_eval.trunk_wallet[:12] + "...",
+                            peel_eval.trunk_share * 100,
+                        )
+                        if peel_eval.trunk_wallet not in crawled_addresses:
+                            if peel_eval.trunk_wallet not in next_frontier:
+                                next_frontier.append(peel_eval.trunk_wallet)
+                    else:
+                        sorted_receivers = sorted(
+                            [
+                                (rec, amt)
+                                for rec, amt in outgoing_by_receiver.items()
+                                if amt >= min_amount_threshold and rec not in crawled_addresses
+                            ],
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )
+                        for rec, _ in sorted_receivers[:max_branches_per_hop]:
+                            if rec not in next_frontier:
+                                next_frontier.append(rec)
 
             frontier = next_frontier
             if not frontier or len(crawled_addresses) >= max_total_crawled:

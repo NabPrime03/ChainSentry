@@ -35,7 +35,7 @@ class AddressNode(BaseModel):
 class TraceRequest(BaseModel):
     """User/Frontend request payload to initiate a forensic trace."""
     target_address: str = Field(..., description="The suspicious source address to trace from")
-    max_hops: int = Field(default=3, ge=1, le=10, description="Maximum forward traversal depth")
+    max_hops: int = Field(default=5, ge=1, le=15, description="Maximum forward traversal depth")
     currency: str = Field(default="BTC", description="Target currency (BTC, ETH)")
     min_amount_threshold: float = Field(default=0.0, ge=0.0, description="Minimum transfer amount to expand")
     generate_viz: bool = Field(default=True, description="Whether to compile PyVis interactive HTML")
@@ -69,4 +69,5 @@ class TraceResponse(BaseModel):
     viz_html_available: bool = False
     viz_html_path: Optional[str] = None
     audit_trail: Optional[Dict[str, Any]] = Field(default=None, description="Cryptographic SHA-256 hash-chained log of every traversed node")
+    forensic_report: Optional[Dict[str, Any]] = Field(default=None, description="Modular function risks and overall threat score")
     execution_time_ms: float

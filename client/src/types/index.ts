@@ -56,6 +56,27 @@ export interface AuditTrailSummary {
   steps: AuditTrailStep[];
 }
 
+export interface FunctionRisk {
+  risk_score: number;
+  status: 'FLAGGED' | 'SUSPICIOUS' | 'CLEAN' | string;
+  reason: string;
+}
+
+export interface OverallRisk {
+  score: number;
+  level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | string;
+  confidence_score: number;
+  confidence_level: 'HIGH' | 'MEDIUM' | 'LOW' | string;
+  summary: string;
+}
+
+export interface ForensicReport {
+  target_address: string;
+  hops_analyzed: number;
+  overall_risk: OverallRisk;
+  function_risks: Record<string, FunctionRisk>;
+}
+
 export interface TraceResponse {
   target_address: string;
   currency: string;
@@ -68,6 +89,7 @@ export interface TraceResponse {
   viz_html_available: boolean;
   viz_html_path?: string | null;
   audit_trail?: AuditTrailSummary | null;
+  forensic_report?: ForensicReport | null;
   execution_time_ms: number;
 }
 

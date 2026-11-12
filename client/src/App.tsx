@@ -16,6 +16,7 @@ import { ApiKeyModal } from './components/ApiKeyModal';
 import { ChainFlowPipeline } from './components/ChainFlowPipeline';
 import { PyVisGraphViewer } from './components/PyVisGraphViewer';
 import { AuditTrailViewer } from './components/AuditTrailViewer';
+import { ForensicReportPanel } from './components/ForensicReportPanel';
 import { ApiConfig, ServerHealth, TraceResponse } from './types';
 import {
   checkServerHealth,
@@ -37,6 +38,7 @@ export const App: React.FC = () => {
   // Currency: BTC or ETH
   const [currency, setCurrency] = useState<'BTC' | 'ETH'>('BTC');
   const [inputId, setInputId] = useState('');
+  const [hops, setHops] = useState<number>(5);
 
   // Active view: pipeline, interactive pyvis graph, or audit trail
   const [viewMode, setViewMode] = useState<'pipeline' | 'pyvis' | 'audit'>('pipeline');
@@ -76,7 +78,7 @@ export const App: React.FC = () => {
         // 2. Query backend trace API
         const result = await traceAddress({
           target_address: resolved.resolvedAddress,
-          max_hops: 3,
+          max_hops: hops,
           currency: activeCurr,
           generate_viz: true,
         });
@@ -224,6 +226,25 @@ export const App: React.FC = () => {
               className="flex-1 bg-transparent text-sm sm:text-base text-white placeholder-slate-500 px-3 py-2.5 focus:outline-none font-mono tracking-tight"
             />
 
+            {/* Hops Depth Selector */}
+            <div className="flex items-center gap-1 bg-slate-950/80 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-mono shrink-0">
+              <span className="text-slate-400 text-[10px] uppercase font-semibold mr-1">Depth:</span>
+              {[3, 5, 8, 10].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setHops(h)}
+                  className={`px-2 py-0.5 rounded-lg text-xs font-bold transition ${
+                    hops === h
+                      ? 'bg-sky-500 text-slate-950 shadow-sm'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                  }`}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
+
             {/* Action Button */}
             <button
               type="submit"
@@ -251,6 +272,11 @@ export const App: React.FC = () => {
             <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
             <span className="flex-1">{error}</span>
           </div>
+        )}
+
+        {/* 2. FORENSIC ASSESSMENT REPORT PANEL */}
+        {trace?.forensic_report && (
+          <ForensicReportPanel report={trace.forensic_report} />
         )}
 
         {/* View Mode Switcher & Quick Stats Bar */}

@@ -20,6 +20,7 @@ from ingestion.benchmark import (
     MIXER_POOL_ETH,
 )
 from viz.renderer import render_trace_to_html
+from forensics.pipeline import ForensicPipeline
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 router = APIRouter(prefix="/api/v1")
@@ -193,7 +194,32 @@ def trace_address(request: TraceRequest):
         },
     )
 
-    # 6. Generate PyVis interactive HTML if requested
+    # 6. Run Master Forensic Pipeline
+    forensic_pipeline = ForensicPipeline()
+    report = forensic_pipeline.analyze(
+        target_address=target_addr,
+        nodes=visited_nodes_list,
+        transactions=transactions,
+        end_receivers=end_receivers_list,
+        max_hops=request.max_hops,
+    )
+
+    logger.info(
+        "🛡️ [Forensic Assessment] Threat Score: %.1f (%s) │ Summary: %s",
+        report.overall_risk.score,
+        report.overall_risk.level,
+        report.overall_risk.summary,
+    )
+    for fn_name, fn_res in report.function_risks.items():
+        logger.info(
+            "   ↳ [%s] Risk: %.1f │ Status: %s │ Reason: %s",
+            fn_name,
+            fn_res.risk_score,
+            fn_res.status,
+            fn_res.reason,
+        )
+
+    # 7. Generate PyVis interactive HTML if requested
     viz_available = False
     viz_path = os.path.join(SERVER_DIR, "static", "trace_graph.html")
     if request.generate_viz:
@@ -240,6 +266,7 @@ def trace_address(request: TraceRequest):
         viz_html_available=viz_available,
         viz_html_path=f"/api/v1/graph/html?address={target_addr}" if viz_available else None,
         audit_trail=audit.to_dict(),
+        forensic_report=report.model_dump(),
         execution_time_ms=elapsed_ms,
     )
 

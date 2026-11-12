@@ -38,17 +38,30 @@ KNOWN_SANCTIONED: Dict[str, str] = {
     "0xHacker_Ethereum_Vault_7a1b": "Ethereum Exploiter Vault",
 }
 
+# Known verified non-profit, charity, and public infrastructure entities (Zero Malicious Threat)
+KNOWN_BENIGN: Dict[str, str] = {
+    "1Archive1n2C579dMsAu3iC6tWzuQJz8dN": "Internet Archive (Public Charity Donation)",
+    "3P3QsMVK89JBNqZQv5zMAKG8FK3kJM4rjt": "Wikimedia Foundation (Charity Donation)",
+    "1BTCorgHnTnjjhR32QC1x558EhnQeTrjz4": "Bitcoin.org (Public Development)",
+    "1F1tAaz5x1HUXrCNLbtMDqcw6o5GNn4xqX": "Silk Road Seized FBI Vault",
+}
+
 
 def identify_entity(address: str) -> Tuple[Optional[str], Optional[str], bool, bool]:
     """
-    Identifies if an address belongs to a known Exchange, Mixer, or Sanctioned entity.
+    Identifies if an address belongs to a known Exchange, Mixer, Sanctioned, or Benign entity.
     Returns:
         (category, entity_name, is_terminal_cashout, is_mixer)
     """
     clean_addr = address.strip()
     lower_addr = clean_addr.lower()
 
-    # 1. Check known exchanges
+    # 1. Check known verified benign / charity entities
+    if clean_addr in KNOWN_BENIGN or lower_addr in {k.lower(): v for k, v in KNOWN_BENIGN.items()}:
+        name = KNOWN_BENIGN.get(clean_addr) or {k.lower(): v for k, v in KNOWN_BENIGN.items()}.get(lower_addr)
+        return "BENIGN", name, False, False
+
+    # 2. Check known exchanges
     if clean_addr in KNOWN_EXCHANGES or lower_addr in {k.lower(): v for k, v in KNOWN_EXCHANGES.items()}:
         name = KNOWN_EXCHANGES.get(clean_addr) or {k.lower(): v for k, v in KNOWN_EXCHANGES.items()}.get(lower_addr)
         return "EXCHANGE", name, True, False
