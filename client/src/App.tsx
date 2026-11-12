@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, KeyRound, Search, ArrowRight, Sparkles, RefreshCw, AlertCircle, Coins } from 'lucide-react';
+import { Shield, KeyRound, Search, ArrowRight, RefreshCw, AlertCircle } from 'lucide-react';
 import { ApiKeyModal } from './components/ApiKeyModal';
-import { ConnectionFlowChart } from './components/ConnectionFlowChart';
-import { ApiConfig, FlowStep, ServerHealth, TraceResponse } from './types';
+import { ChainFlowPipeline } from './components/ChainFlowPipeline';
+import { ApiConfig, ServerHealth, TraceResponse } from './types';
 import {
   checkServerHealth,
   findActiveBackendUrl,
-  generateFlowSteps,
   getApiConfig,
   resetApiConfig,
   resolveInput,
@@ -23,15 +22,11 @@ export const App: React.FC = () => {
 
   // Currency: BTC or ETH
   const [currency, setCurrency] = useState<'BTC' | 'ETH'>('BTC');
-  const [inputId, setInputId] = useState('tx_hop1_trunk_001');
-
-  // Connection flow steps
-  const [flowSteps, setFlowSteps] = useState<FlowStep[]>([]);
-  const [activeStep, setActiveStep] = useState<FlowStep | null>(null);
+  const [inputId, setInputId] = useState('');
 
   const [isApiModalOpen, setIsApiModalOpen] = useState(false);
 
-  // Auto-connect and load health
+  // Auto-connect to active server
   const refreshConnection = useCallback(async () => {
     setHealth({ status: 'checking' });
     const activeUrl = await findActiveBackendUrl();
@@ -47,7 +42,7 @@ export const App: React.FC = () => {
 
   // Main trace function
   const handleTrace = useCallback(
-    async (idToTrace: string, selectedCurrency?: 'BTC' | 'ETH') => {
+    async (idToTrace: string, overrideCurrency?: 'BTC' | 'ETH') => {
       const trimmed = idToTrace.trim();
       if (!trimmed) return;
 
@@ -58,10 +53,10 @@ export const App: React.FC = () => {
       try {
         // 1. Resolve Transaction ID to Person / Address & detect BTC vs ETH
         const resolved = await resolveInput(trimmed);
-        const activeCurr = selectedCurrency || resolved.currency || currency;
+        const activeCurr = overrideCurrency || resolved.currency || currency;
         setCurrency(activeCurr);
 
-        // 2. Fetch connection trace from backend
+        // 2. Query backend trace API
         const result = await traceAddress({
           target_address: resolved.resolvedAddress,
           max_hops: 3,
@@ -70,20 +65,6 @@ export const App: React.FC = () => {
         });
 
         setTrace(result);
-
-        // 3. Build connection flow chart steps
-        const steps = generateFlowSteps(result);
-        setFlowSteps(steps);
-
-        // 4. Highlight matched step if user searched for specific tx
-        if (resolved.initialTxHash) {
-          const matched = steps.find(
-            (s) => s.txHash.toLowerCase() === resolved.initialTxHash?.toLowerCase()
-          );
-          setActiveStep(matched || steps[0] || null);
-        } else if (steps.length > 0) {
-          setActiveStep(steps[0]);
-        }
       } catch (err: any) {
         console.error('Trace error', err);
         setError(
@@ -99,45 +80,48 @@ export const App: React.FC = () => {
   // Initial load
   useEffect(() => {
     refreshConnection().then(() => {
-      handleTrace('tx_hop1_trunk_001', 'BTC');
+      // Default initial trace so screen starts with an active flow immediately
+      const defaultId = 'bc1q_hacker_ransomware_vault';
+      setInputId(defaultId);
+      handleTrace(defaultId, 'BTC');
     });
   }, []);
 
   const handleCurrencySwitch = (newCurrency: 'BTC' | 'ETH') => {
     setCurrency(newCurrency);
     if (newCurrency === 'ETH') {
-      setInputId('0xeth_tx_01');
-      handleTrace('0xeth_tx_01', 'ETH');
+      const ethDefault = '0xHacker_Ethereum_Vault_7a1b';
+      setInputId(ethDefault);
+      handleTrace(ethDefault, 'ETH');
     } else {
-      setInputId('tx_hop1_trunk_001');
-      handleTrace('tx_hop1_trunk_001', 'BTC');
+      const btcDefault = 'bc1q_hacker_ransomware_vault';
+      setInputId(btcDefault);
+      handleTrace(btcDefault, 'BTC');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-sky-300">
-      {/* 1. CLEAN TOP HEADER */}
-      <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md sticky top-0 z-30 px-4 lg:px-8 py-3">
+    <div className="min-h-screen bg-[#050811] text-slate-100 flex flex-col font-sans selection:bg-sky-500/30 selection:text-sky-300">
+      {/* 1. TOP HEADER */}
+      <header className="border-b border-slate-800/80 bg-[#070b14]/90 backdrop-blur-md sticky top-0 z-30 px-4 lg:px-8 py-3">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
-          {/* Logo */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white font-bold shadow-md shadow-sky-500/20">
-              <Shield className="w-5 h-5" />
+          {/* Logo & Title */}
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-sky-500 to-indigo-600 text-white font-bold shadow-md shadow-sky-500/20">
+              <Shield className="w-4 h-4" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-base tracking-tight text-white">ChainSentry</h1>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800 font-semibold">
-                  FLOW INTELLIGENCE
-                </span>
-              </div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-base tracking-tight text-white">ChainSentry</h1>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800 font-semibold">
+                FLOW INTELLIGENCE
+              </span>
             </div>
           </div>
 
           {/* Currency Toggle & Connection Status */}
           <div className="flex items-center gap-3">
             {/* Currency Selector (Bitcoin vs Ethereum) */}
-            <div className="flex items-center rounded-xl bg-slate-900 border border-slate-800 p-1 text-xs font-bold">
+            <div className="flex items-center rounded-xl bg-slate-900 border border-slate-800 p-0.5 text-xs font-bold">
               <button
                 type="button"
                 onClick={() => handleCurrencySwitch('BTC')}
@@ -191,14 +175,14 @@ export const App: React.FC = () => {
 
       {/* 2. MAIN BODY */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 lg:px-8 py-6 space-y-6">
-        {/* Clean Address / Transaction ID Input Bar */}
-        <section className="space-y-3">
+        {/* Simple Address / Transaction ID Input Bar (NO dummy entries) */}
+        <section>
           <form
             onSubmit={(e) => {
               e.preventDefault();
               handleTrace(inputId);
             }}
-            className="flex flex-col sm:flex-row items-center gap-2 bg-slate-900/90 border border-slate-700/80 focus-within:border-sky-500 rounded-2xl p-2 shadow-xl backdrop-blur-md transition"
+            className="flex flex-col sm:flex-row items-center gap-2 bg-[#090e1c] border border-slate-700/80 focus-within:border-sky-500 rounded-2xl p-2 shadow-2xl backdrop-blur-md transition"
           >
             {/* Input Icon & Detected Currency Badge */}
             <div className="flex items-center pl-3 gap-2 text-slate-400 shrink-0">
@@ -214,16 +198,16 @@ export const App: React.FC = () => {
               </span>
             </div>
 
-            {/* The Main Address / ID Input */}
+            {/* Clean Input Field */}
             <input
               type="text"
               value={inputId}
               onChange={(e) => setInputId(e.target.value)}
-              placeholder="Enter Transaction ID or Person Address (e.g. tx_hop1_trunk_001)..."
-              className="flex-1 bg-transparent text-sm sm:text-base text-white placeholder-slate-500 px-2 py-2 focus:outline-none font-mono tracking-tight"
+              placeholder="Paste Transaction ID (hash) or Wallet Address and press Enter..."
+              className="flex-1 bg-transparent text-sm sm:text-base text-white placeholder-slate-500 px-3 py-2.5 focus:outline-none font-mono tracking-tight"
             />
 
-            {/* Trace Flow Action Button */}
+            {/* Action Button */}
             <button
               type="submit"
               disabled={loading || !inputId.trim()}
@@ -242,66 +226,6 @@ export const App: React.FC = () => {
               )}
             </button>
           </form>
-
-          {/* Quick Presets Bar */}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-slate-400 text-xs flex items-center gap-1 font-medium">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              <span>Sample IDs:</span>
-            </span>
-
-            {/* BTC Preset 1 */}
-            <button
-              type="button"
-              onClick={() => {
-                setCurrency('BTC');
-                setInputId('tx_hop1_trunk_001');
-                handleTrace('tx_hop1_trunk_001', 'BTC');
-              }}
-              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-amber-500 text-slate-300 font-mono text-[11px] transition"
-            >
-              ₿ tx_hop1_trunk_001 <span className="text-slate-500">(BTC Trunk)</span>
-            </button>
-
-            {/* BTC Preset 2 */}
-            <button
-              type="button"
-              onClick={() => {
-                setCurrency('BTC');
-                setInputId('tx_hop3_cashout_007');
-                handleTrace('tx_hop3_cashout_007', 'BTC');
-              }}
-              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500 text-slate-300 font-mono text-[11px] transition"
-            >
-              ₿ tx_hop3_cashout_007 <span className="text-slate-500">(Binance Cashout)</span>
-            </button>
-
-            {/* ETH Preset */}
-            <button
-              type="button"
-              onClick={() => {
-                setCurrency('ETH');
-                setInputId('0xeth_tx_01');
-                handleTrace('0xeth_tx_01', 'ETH');
-              }}
-              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500 text-slate-300 font-mono text-[11px] transition"
-            >
-              Ξ 0xeth_tx_01 <span className="text-slate-500">(ETH Mixer Tx)</span>
-            </button>
-
-            {/* Person Vault Address */}
-            <button
-              type="button"
-              onClick={() => {
-                setCurrency('BTC');
-                setInputId('bc1q_hacker_ransomware_vault');
-                handleTrace('bc1q_hacker_ransomware_vault', 'BTC');
-              }}
-              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-rose-500 text-slate-300 font-mono text-[11px] transition"
-            >
-              🎯 bc1q_hacker_vault <span className="text-slate-500">(Person Address)</span>
-            </button>
-          </div>
         </section>
 
         {/* Error notification if any */}
@@ -312,16 +236,10 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* 3. THE CONNECTION FLOW CHART */}
+        {/* 3. THE CONNECTION FLOW CHART PIPELINE */}
         {trace && (
           <section className="animate-fadeIn">
-            <ConnectionFlowChart
-              trace={trace}
-              flowSteps={flowSteps}
-              activeStep={activeStep}
-              onSelectStep={(step) => setActiveStep(step)}
-              currency={currency}
-            />
+            <ChainFlowPipeline trace={trace} currency={currency} />
           </section>
         )}
       </main>
