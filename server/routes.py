@@ -69,7 +69,7 @@ def trace_address(request: TraceRequest):
     """
     start_time = time.time()
     target_addr = request.target_address.strip()
-    logger.info("Initiating forensic trace for %s (max_hops=%d, currency=%s)", target_addr, request.max_hops, request.currency)
+    logger.info("🎯 [Trace Requested] Target Address: %s │ Max Hops: %d │ Currency: %s", target_addr, request.max_hops, request.currency)
 
     if not target_addr:
         raise HTTPException(status_code=400, detail="Target address cannot be empty.")
@@ -78,17 +78,22 @@ def trace_address(request: TraceRequest):
     audit = AuditTrail(target_address=target_addr)
 
     # 2. Ingest transactions via recursive multi-hop crawler
+    ingest_start = time.time()
     transactions = provider.crawl_multihop_transactions(
         root_address=target_addr,
         max_hops=request.max_hops,
         min_amount_threshold=request.min_amount_threshold,
     )
+    ingest_ms = round((time.time() - ingest_start) * 1000, 1)
 
     if not transactions:
+        logger.warning("❌ No transactions found for target address %s", target_addr)
         raise HTTPException(
             status_code=404,
             detail=f"No transaction records found for address {target_addr}.",
         )
+
+    logger.info("📥 [Ingestion Complete] %d total transaction edge(s) gathered in %.1fms", len(transactions), ingest_ms)
 
     audit.record_step(
         step_type="INGESTION_COMPLETE",
@@ -106,15 +111,46 @@ def trace_address(request: TraceRequest):
     tx_graph.build_from_transactions(transactions)
 
     # 4. Perform multi-hop forward trace from target address
+    graph_start = time.time()
     trace_result = tx_graph.trace_forward(
         source_address=target_addr,
         max_hops=request.max_hops,
         min_amount_threshold=request.min_amount_threshold,
     )
+    graph_ms = round((time.time() - graph_start) * 1000, 1)
 
     visited_nodes_list = trace_result["visited_nodes"]
     end_receivers_list = trace_result["end_receivers"]
     visited_addrs = {n.address for n in visited_nodes_list}
+
+    logger.info(
+        "🕸️ [Graph Traversal Complete] Discovered %d visited address(es) and %d subgraph edge(s) in %.1fms",
+        len(visited_nodes_list),
+        len(trace_result["subgraph_edges"]),
+        graph_ms,
+    )
+
+    for node in visited_nodes_list:
+        logger.info(
+            "   📍 Node %s... │ Hop: %s │ Sent: %.4f %s │ Recv: %.4f %s │ Tags: %s",
+            node.address[:16],
+            node.hop_distance if node.hop_distance is not None else 0,
+            node.total_sent,
+            request.currency,
+            node.total_received,
+            request.currency,
+            node.tags or ["None"],
+        )
+
+    for receiver in end_receivers_list:
+        logger.info(
+            "   🏁 Terminal Sink %s... │ Depth: %d │ Amount: %.4f %s │ Reason: %s",
+            receiver.address[:16],
+            receiver.hop_depth,
+            receiver.amount_reached,
+            request.currency,
+            receiver.stopping_reason,
+        )
 
     # 5. Record visited nodes and forensic stopping points in audit trail
     for node in visited_nodes_list:
@@ -175,7 +211,8 @@ def trace_address(request: TraceRequest):
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
     logger.info(
-        "Trace completed in %.2fms: %d nodes, %d edges, %d end receivers",
+        "✅ [Trace Complete] Target: %s │ Total Time: %.2fms │ Nodes: %d │ Edges: %d │ Sinks: %d",
+        target_addr,
         elapsed_ms,
         len(visited_nodes_list),
         len(trace_result["subgraph_edges"]),
